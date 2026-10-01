@@ -70,14 +70,10 @@ pub(crate) fn ray_may_hit(
     omsi_geometry::ray_near_sphere(o, dir.normalize_or_zero(), c, r)
 }
 
-/// How far the outside camera sits from the bus: at the start, and the nearest and
-/// farthest the wheel or +/- take it. The old 18 m default with a 200 m maximum was a
-/// helicopter view; a bus is 11 m long and reads best from ten.
+/// How far the outside camera sits from the bus at the start: clamp `4..40`,
+/// FOV 60. The nearest and farthest the wheel or +/- take it.
+/// (The chase machine clamps itself; this stays for legacy readers.)
 pub(crate) const ORBIT_DEFAULT: f32 = 10.0;
-
-pub(crate) const ORBIT_MIN: f32 = 3.5;
-
-pub(crate) const ORBIT_MAX: f32 = 40.0;
 
 /// `--look yaw,pitch`: how far the head is turned in an offscreen run.
 pub(crate) fn look_of(args: &Args) -> (f32, f32) {

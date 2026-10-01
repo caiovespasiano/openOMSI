@@ -20,19 +20,24 @@ pub(crate) struct Placing {
 }
 
 /// Where the ray from `o` along `d` first meets the ground (the terrain, the streets), up
-/// to `max` metres away.
+/// to `max` metres away: march from `t = 0.05` with step
+/// `clamp(0.75/horiz, 0.05, 2.0)` and 14 bisections. (F4 picking lives in
+/// `vse_orbit` now; this stays the vehicle-placing march.)
 pub(crate) fn ground_hit(w: &crate::scene::World, o: DVec3, d: DVec3, max: f64) -> Option<DVec3> {
     let above = |t: f64| -> Option<bool> {
         let p = o + d * t;
         w.ground_height(p.x, p.y).map(|g| p.z > g)
     };
-    let mut t = 0.5;
+    let horiz = (d.x * d.x + d.y * d.y).sqrt().max(1e-6);
+    let step = (0.75 / horiz).clamp(0.05, 2.0);
+    let mut t = 0.05;
     let mut last = 0.0;
-    while t < max {
+    while t < max.min(4000.0) {
         if above(t) == Some(false) {
-            // (between the last point above the ground and this one below it)
+            // (between the last point above the ground and this one below it;
+            // bisect 14 times)
             let (mut a, mut b) = (last, t);
-            for _ in 0..24 {
+            for _ in 0..crate::vse::VSE_PICK_BISECT {
                 let m = (a + b) * 0.5;
                 if above(m).unwrap_or(true) {
                     a = m;
@@ -44,7 +49,7 @@ pub(crate) fn ground_hit(w: &crate::scene::World, o: DVec3, d: DVec3, max: f64) 
             return w.ground_height(p.x, p.y).map(|g| DVec3::new(p.x, p.y, g));
         }
         last = t;
-        t += (t * 0.01).max(0.25);
+        t += step;
     }
     None
 }

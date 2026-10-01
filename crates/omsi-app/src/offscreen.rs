@@ -1013,11 +1013,10 @@ pub(crate) fn run_offscreen(
                     );
                     p.sync_driver(&renderer, &mut scene, 1.0 / 30.0, settings.driver, args.view == "driver");
                     if args.cam.is_none() && args.view != "free" && args.follow.is_none() {
-                        // the head turned as --look says, like the final image
+                        // the head turned as --look says, like the final image.
+                        // `outside` renders straight from the VSE chase core
+                        // (stateless first frame); the legacy arm is gone.
                         cam = p.camera_look(&args.view, &camera, look_of(args), offscreen_orbit());
-                        if args.view == "outside" {
-                            cam = p.camera_clipped(cam, &world, offscreen_orbit(), 0.0);
-                        }
                     }
                     vehicle_camera(p, &mut cam);
                 }
@@ -1696,10 +1695,8 @@ pub(crate) fn run_offscreen(
             }
         }
         if args.cam.is_none() && args.view != "free" && args.follow.is_none() {
+            // `outside` renders straight from the VSE chase core (no arm).
             camera = player.camera_look(&args.view, &camera, look_of(&args), offscreen_orbit());
-            if args.view == "outside" {
-                camera = player.camera_clipped(camera, &world, offscreen_orbit(), 0.0);
-            }
         }
         vehicle_camera(&player, &mut camera);
         player_ref = Some(player);

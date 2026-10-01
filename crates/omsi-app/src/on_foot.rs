@@ -714,6 +714,8 @@ impl App {
                     }
                     self.view = "free".into();
                     self.ego = false;
+                    // on foot the walker waits while the camera flies.
+                    self.free_fly = true;
                 }
                 true
             }

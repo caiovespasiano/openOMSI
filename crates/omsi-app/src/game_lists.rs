@@ -353,6 +353,10 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                     s.driverview_smooth = !s.driverview_smooth;
                     Some(("driverview_smooth", (s.driverview_smooth as u8).to_string()))
                 }
+                "zoom_neg" => {
+                    s.zoom_negative = !s.zoom_negative;
+                    Some(("zoom_negative", (s.zoom_negative as u8).to_string()))
+                }
                 // (at once: stuck under a bridge a map made too low, the bus drives on)
                 "coll_objects" => {
                     s.collision_objects = !s.collision_objects;
@@ -371,11 +375,14 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                     app.mouse_drive = !app.mouse_drive;
                     if !app.mouse_drive {
                         crate::player::keep_wheel(app.player.as_mut());
+                        app.mouse_edge = 0.0;
+                        app.mouse_past = 0.0;
                     }
                     #[cfg(windows)]
                     if !app.mouse_drive {
                         app.reset_vr_pointer();
                     }
+                    app.cursor_confined = app.confine_cursor(app.mouse_drive);
                     app.mouse_steer = (app.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
                     app.mouse_pedals = app.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
                     None

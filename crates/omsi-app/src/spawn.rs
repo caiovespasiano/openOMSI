@@ -447,7 +447,6 @@ pub(crate) fn spawn_player(
         duty_typed: false,
         html_next_stop: None,
         ibis_background: false,
-        arm: Default::default(),
         blinker_key_state: 0,
     };
     for _ in 0..3 {

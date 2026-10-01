@@ -99,8 +99,6 @@ pub(crate) struct Player {
     /// The IBIS typing looks for its keys on a worker thread (in the window: the trials
     /// would hold a frame up to a second and a half; an offscreen run waits for them).
     pub(crate) ibis_background: bool,
-    /// The outside camera's arm (how far out it is swung right now).
-    pub(crate) arm: camera_arm::SpringArm,
     /// What `Z`/`X`/`C` last turned on, so a repeat press of the same key turns it back off
     /// (real OMSI's Z/X/C and Shift+numpad 4/6/5 are toggles, not one-shot "set" buttons):
     /// 0 = nothing, 1 = left, 2 = right, 3 = hazard.
@@ -124,6 +122,9 @@ pub(crate) struct Player {
 /// `Inputs/keyboard.cfg` gives W the wipers, S the viewpoint and **D the D of the automatic
 /// gearbox**, so those three are reached by holding shift (Shift+D selects D), and the bus
 /// can still be put into gear. `--drive-keys arrows` leaves W/A/S/D to OMSI entirely.
+/// The arrow keys NEVER drive — arrows are F1/F2 camera previous/next.
+/// Hence no arrow mapping here in any preset; camera switching lives in `on_key`
+/// (`view_interiorcam_∓`) and the per-frame glance/orbit.
 /// The driving keys of a control preset (`drive_keys` in the settings):
 /// `omsi` - only the original layout of Inputs/keyboard.cfg (Shift + numpad), nothing extra;
 /// `simple` - W/S/A/D and Up/Down drive (plain Left/Right keep OMSI's interior camera
@@ -1197,16 +1198,50 @@ impl Player {
             self.axes.brake = 0.0;
         }
         self.auto_clutch_bite(a.throttle.unwrap_or(0.0).max(self.axes.throttle));
+        // While the mouse owns the wheel its analogs are the only
+        // truth — the keyboard must not add on top via `max`
+        // (keyboard authority is zero; `O + W`/`O + S` otherwise double-drive).
+        let owned = self.axes.mouse_owned;
         self.vehicle.set_controls(omsi_sim::Controls {
-            throttle: a.throttle.unwrap_or(self.axes.throttle).max(self.axes.throttle),
-            brake: a.brake.unwrap_or(self.axes.brake).max(self.axes.brake),
-            clutch: a.clutch.unwrap_or(self.axes.clutch).max(self.axes.clutch),
-            // (a wheel at rest does not hold against the keys)
-            steering: match a.steering {
-                Some(s) if s.abs() > 0.02 || self.axes.steering == 0.0 => s,
-                _ => self.axes.steering,
+            throttle: if owned {
+                a.throttle.unwrap_or(0.0)
+            } else {
+                a.throttle.unwrap_or(self.axes.throttle).max(self.axes.throttle)
             },
+            brake: if owned {
+                a.brake.unwrap_or(0.0)
+            } else {
+                a.brake.unwrap_or(self.axes.brake).max(self.axes.brake)
+            },
+            clutch: a.clutch.unwrap_or(self.axes.clutch).max(self.axes.clutch),
+            // (a wheel at rest does not hold against the keys; exactly one
+            // writer per frame — see `vse_pick_steering`)
+            steering: crate::vse::vse_pick_steering(a.steering, self.axes.steering),
         });
+        // OMSI_TRACE_STEER=<csv>: steering writers per frame, next to the
+        // mouse trace (`<csv>.tick`): keyboard axes, analog slot, merged final,
+        // mouse ownership and held keys. Exactly one source may move per frame;
+        // run the game with the variable set and read who wrote the drift.
+        if let Some(path) = omsi_cfg::env::var_os("OMSI_TRACE_STEER") {
+            use std::io::Write;
+            static TRACE_TICK: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+            static FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut g = TRACE_TICK.lock().unwrap_or_else(|e| e.into_inner());
+            if g.is_none() {
+                let mut p = std::path::PathBuf::from(&path);
+                p.set_extension("tick.csv");
+                *g = std::fs::File::create(&p).ok();
+                if let Some(f) = g.as_mut() {
+                    let _ = writeln!(f, "frame,axes,analog,final,owned,keys_lrws");
+                }
+            }
+            if let Some(f) = g.as_mut() {
+                let keys = (self.axes.left_key as u8) | ((self.axes.right_key as u8) << 1) | ((self.axes.throttle_key as u8) << 2) | ((self.axes.brake_key as u8) << 3);
+                let an = a.steering.map(|s| s.to_string()).unwrap_or_default();
+                let _ = writeln!(f, "{n},{:.4},{an},{:.4},{},{}", self.axes.steering, self.vehicle.physics.controls.steering, self.axes.mouse_owned as u8, keys);
+            }
+        }
         self.vehicle.update(dt);
         // OMSI_SUSP_TRACE_WINDOW=<csv>: each wheel's travel every frame of a window run
         // (the offscreen run has OMSI_SUSP_TRACE)
@@ -1694,51 +1729,6 @@ impl Player {
         self.camera_look(view, fallback, (0.0, 0.0), ORBIT_DEFAULT)
     }
 
-    /// The outside camera must not go through walls or under the road: it stands short of
-    /// the first building, wall or canopy between it and the point it orbits, and above the
-    /// ground (see `camera_arm`). `dt` 0 is a single picture: the arm is where it would
-    /// settle, without easing.
-    pub(crate) fn camera_clipped(
-        &mut self,
-        mut cam: Camera,
-        world: &scene::World,
-        dist: f32,
-        dt: f32,
-    ) -> Camera {
-        let def = &self.vehicle.ty.def;
-        let c = def.camera_outside_center;
-        let centre = self.vehicle.position
-            + self
-            .vehicle
-            .body_rotation()
-            .transform_point3(Vec3::new(c[0], c[1], c[2]))
-            .as_dvec3();
-        let want = dist.clamp(ORBIT_MIN, ORBIT_MAX);
-        let back = -cam.forward().as_dvec3().normalize_or_zero();
-        if back.length_squared() < 0.5 {
-            return cam;
-        }
-        let right = cam.right().as_dvec3().normalize_or_zero();
-        let up = back.cross(right).normalize_or_zero();
-        let t0 = Instant::now();
-        let free = camera_arm::free_length(world, centre, back, right, up, want as f64) as f32;
-        let len = if dt <= 0.0 {
-            self.arm.reset();
-            free
-        } else {
-            self.arm.update(want, free, centre, dt)
-        };
-        if camera_arm::debug_level() >= 2 {
-            log::info!(
-                "camera arm: yaw {:.1} want {want:.2} free {free:.2} arm {len:.2} ({:.3} ms)",
-                cam.yaw,
-                t0.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-        cam.position = centre + back * len as f64;
-        cam
-    }
-
     /// How many passenger cameras the bus has, its coupled parts' included.
     pub(crate) fn pax_camera_count(&self) -> usize {
         self.vehicle.ty.def.cameras_pax.len() + self.vehicle.trailers.iter().map(|t| t.ty.def.cameras_pax.len()).sum::<usize>()
@@ -1772,6 +1762,7 @@ impl Player {
     /// `look`: yaw/pitch the player has turned the head (or the orbit) by; `dist`: how far
     /// the outside camera sits from the vehicle.
     pub(crate) fn camera_look(&self, view: &str, fallback: &Camera, look: (f32, f32), dist: f32) -> Camera {
+        let _ = fallback;
         let def = &self.vehicle.ty.def;
         // `mirror<n>`: what the n-th mirror's camera sees, as it is drawn into the mirror's
         // picture (a check of the mirrors against OMSI's own `reflexion<n>.bmp`)
@@ -1845,26 +1836,31 @@ impl Player {
                 }
             }
             None => {
-                // outside view: an orbit around the vehicle
-                let c = def.camera_outside_center;
-                let center = self.vehicle.position
-                    + self
-                    .vehicle
-                    .body_rotation()
-                    .transform_point3(Vec3::new(c[0], c[1], c[2]))
-                    .as_dvec3();
-                let mut cam = Camera {
-                    position: center,
-                    yaw: self.vehicle.heading as f32 - 35.0 + look.0,
-                    pitch: (-15.0 + look.1).clamp(-85.0, 85.0),
+                // Outside (F3/offscreen): chase pose from the shared core
+                // (`chase_points`), stateless here (first frame = filter
+                // snap). `look.0` seeds chase yaw, `12 + look.1` the pitch,
+                // `dist` the distance. Live frames use `VseChase` instead.
+                // Angles derive from the chase points (never sign-hacked).
+                let (cpos, ctgt) = crate::vse_orbit::chase_points(
+                    self.vehicle.position.x,
+                    self.vehicle.position.y,
+                    self.vehicle.position.z + def.camera_outside_center[2] as f64,
+                    self.vehicle.heading,
+                    look.0,
+                    12.0 + look.1,
+                    dist,
+                );
+                let (dx, dy, dz) = (ctgt[0] - cpos[0], ctgt[1] - cpos[1], ctgt[2] - cpos[2]);
+                let len = (dx * dx + dy * dy + dz * dz).sqrt().max(1e-9);
+                Camera {
+                    position: DVec3::new(cpos[0], cpos[1], cpos[2]),
+                    yaw: dx.atan2(dy).to_degrees() as f32,
+                    pitch: ((dz / len).clamp(-1.0, 1.0)).asin().to_degrees() as f32,
                     roll: 0.0,
                     fov_deg: fallback.fov_deg,
                     near: 0.1,
                     far: 6000.0,
-                };
-                cam.position =
-                    center - (cam.forward() * dist.clamp(ORBIT_MIN, ORBIT_MAX)).as_dvec3();
-                cam
+                }
             }
         }
     }
@@ -2121,13 +2117,26 @@ pub(crate) fn keep_wheel(p: Option<&mut Player>) {
     }
 }
 
-/// OMSI's mouse steering (Omsi.exe 0x6f4284..0x6f447b): the cursor's place across the whole
-/// window is the steering from full left to full right lock, divided by the speed in tens of
-/// km/h once the bus is faster than 10 km/h (going backwards counts as standing). At 50 km/h
-/// the same movement of the hand turns the wheels a fifth as far: the wheel "gets heavier".
+/// OMSI's mouse steering (Omsi.exe 0x6f4284..0x6f447b): kept for the unit test
+/// and as the documented OMSI behavior; the drive-mode path now uses the
+/// target (`vse_mouse_steering`). Positive = right.
+#[allow(dead_code)]
 pub(crate) fn mouse_steering(cursor_x: f32, width: f32, kmh: f32) -> f32 {
     let x = (2.0 * cursor_x / width.max(1.0) - 1.0).clamp(-1.0, 1.0);
     x / (kmh / 10.0).max(1.0)
+}
+
+/// Mouse target: edge `0.75*|nx|`, corner ramps, no speed division here
+/// (speed lives in the keyboard rates / return-to-centre downstream).
+/// `nx` right+, `-1..1`.
+pub(crate) fn vse_mouse_steering(nx: f32, ny: f32) -> f32 {
+    crate::vse::vse_mouse_target(nx, ny)
+}
+
+/// Mouse pedals: deadzone `0.10`, throttle full top,
+/// brake full at 70% down. `ny` up+, `-1..1`.
+pub(crate) fn vse_mouse_pedals(ny: f32) -> (f32, f32) {
+    crate::vse::vse_mouse_pedals(ny)
 }
 
 /// A mouse pedal following the cursor, `k` of the way left behind each frame. The last bit
@@ -2137,6 +2146,80 @@ pub(crate) fn mouse_steering(cursor_x: f32, width: f32, kmh: f32) -> f32 {
 pub(crate) fn mouse_pedal(current: f32, target: f32, k: f32) -> f32 {
     let v = target + (current - target) * k;
     if (v - target).abs() < 1e-4 { target } else { v }
+}
+
+#[cfg(test)]
+mod input_routing_tests {
+    use super::fallback_action;
+    use omsi_sim::EngineAction as A;
+    use winit::keyboard::KeyCode as K;
+
+    /// Drive-key matrix: W/S/A/D drive (throttle/brake/left/right)
+    /// in the `simple`/`wasd` presets and unknown presets; never in
+    /// `omsi`/`original`. Arrows drive Up/Down (and Left/Right steering) only
+    /// in the `arrows` preset.
+    #[test]
+    fn wasd_drives_only_where_it_should() {
+        for preset in ["simple", "wasd", "weird-preset"] {
+            assert_eq!(fallback_action(K::KeyW, preset), Some(A::Throttle), "{preset}");
+            assert_eq!(fallback_action(K::KeyS, preset), Some(A::Brake), "{preset}");
+            assert_eq!(fallback_action(K::KeyA, preset), Some(A::SteeringLeft), "{preset}");
+            assert_eq!(fallback_action(K::KeyD, preset), Some(A::SteeringRight), "{preset}");
+        }
+        for preset in ["omsi", "original"] {
+            for code in [K::KeyW, K::KeyS, K::KeyA, K::KeyD] {
+                assert_eq!(fallback_action(code, preset), None, "{preset} {code:?}");
+            }
+        }
+        // arrows: Up/Down throttle/brake in `simple`/unknown, full drive in
+        // `arrows`, nothing in `omsi`/`original`/`wasd`.
+        for preset in ["simple", "weird-preset"] {
+            assert_eq!(fallback_action(K::ArrowUp, preset), Some(A::Throttle), "{preset}");
+            assert_eq!(fallback_action(K::ArrowDown, preset), Some(A::Brake), "{preset}");
+            assert_eq!(fallback_action(K::ArrowLeft, preset), None, "{preset}");
+            assert_eq!(fallback_action(K::ArrowRight, preset), None, "{preset}");
+        }
+        assert_eq!(fallback_action(K::ArrowLeft, "arrows"), Some(A::SteeringLeft));
+        assert_eq!(fallback_action(K::ArrowRight, "arrows"), Some(A::SteeringRight));
+    }
+
+    /// Arrow routing: Up/Down never steer (throttle/brake only, and only in
+    /// `simple`/unknown/`arrows`); Left/Right steer only in the `arrows`
+    /// preset (plain arrows keep the interior-camera switch elsewhere,
+    /// guarded by `plain_arrow` in `on_key`).
+    #[test]
+    fn arrows_never_drive_in_any_preset() {
+        // Up/Down are pedals only, Left/Right steer only in `arrows`.
+        for preset in ["wasd", "omsi", "original"] {
+            for code in [K::ArrowUp, K::ArrowDown, K::ArrowLeft, K::ArrowRight] {
+                assert_eq!(fallback_action(code, preset), None, "{preset} {code:?}");
+            }
+        }
+        for preset in ["simple", ""] {
+            assert_eq!(fallback_action(K::ArrowLeft, preset), None, "{preset}");
+            assert_eq!(fallback_action(K::ArrowRight, preset), None, "{preset}");
+        }
+    }
+
+    /// Stock `keyboard.cfg` mirror: no arrow scan code (200/203/205/208) is
+    /// bound to a driving action — only to `view_interiorcam_∓`, which
+    /// `on_key` skips for plain arrows (camera switching has its own arms).
+    #[test]
+    fn stock_arrows_are_camera_keys_only() {
+        for (action, scan, _mod) in crate::stock_keys::STOCK_KEYS {
+            if [200, 203, 205, 208].contains(scan) {
+                assert!(
+                    action.starts_with("view_interiorcam_"),
+                    "arrow DIK {scan} bound to driving action {action}"
+                );
+            }
+        }
+        // and the engine-action namespace has no camera member at all: a camera
+        // key cannot be misrouted into `KeyboardAxes` even if misbound.
+        for name in ["view_interiorcam_minus", "view_interiorcam_plus", "view_set_driver"] {
+            assert_eq!(omsi_sim::input::engine_action(name), None, "{name}");
+        }
+    }
 }
 
 #[cfg(test)]
