@@ -610,7 +610,7 @@ impl DriverFigure {
         let seen = up_now.dot(right).atan2(up_now.dot(up)).to_degrees();
         let by_var = v.var(&w.var).unwrap_or(0.0) * w.factor;
         if seen.abs() > 10.0 && seen.abs() < 170.0 {
-            self.sign = if wrap(by_var - seen).abs() <= wrap(-by_var - seen).abs() { 1.0 } else { -1.0 };
+            self.sign = wheel_sign(self.sign, by_var, seen);
         }
         let theta = if self.sign != 0.0 { by_var * self.sign } else { seen };
         self.theta = theta.clamp(-3600.0, 3600.0);
@@ -880,6 +880,26 @@ fn wrap(a: f32) -> f32 {
     (a + 540.0).rem_euclid(360.0) - 180.0
 }
 
+/// Which way the script variable turns the wheel mesh: `+1` if `by_var`
+/// tracks the seen mesh angle, `-1` if mirrored. Re-decided every frame the
+/// wheel sits mid-turn, so without hysteresis the two options trade places
+/// frame after frame near the equidistant points and the wheel (and the
+/// hands on it) snaps side to side. The challenger must therefore win by a
+/// margin (degrees) to take over; acquisition from undecided stays exact.
+fn wheel_sign(current: f32, by_var: f32, seen: f32) -> f32 {
+    const MARGIN: f32 = 8.0;
+    let (a, b) = (wrap(by_var - seen).abs(), wrap(-by_var - seen).abs());
+    if current > 0.0 && a <= b + MARGIN {
+        1.0
+    } else if current < 0.0 && b <= a + MARGIN {
+        -1.0
+    } else if a <= b {
+        1.0
+    } else {
+        -1.0
+    }
+}
+
 /// The driver figure: one of the map's `drivers.txt` (the human files OMSI draws at the
 /// wheel of its buses - Spandau and Grundorf name `humans\\axyz\\man01.hum`; OMSI
 /// reads the list with the map, the original), chosen by `pick`; without the list OMSI's own
@@ -1023,4 +1043,34 @@ fn find_wheel(v: &VehicleInstance, hip: Vec3) -> Option<Wheel> {
     let radius = radius.clamp(0.14, 0.32);
     log::debug!("driver: steering wheel rim {radius:.3} m round the axis, tube {tube:.3} m thick (radius)");
     Some(Wheel { mesh, var, factor, axis, centre, up, right, radius, tube })
+}
+
+#[cfg(test)]
+mod wheel_sign_tests {
+    use super::wheel_sign;
+
+    /// Acquisition from undecided matches the old exact rule.
+    #[test]
+    fn acquisition_is_exact() {
+        assert_eq!(wheel_sign(0.0, 30.0, 28.0), 1.0);
+        assert_eq!(wheel_sign(0.0, 30.0, -28.0), -1.0);
+    }
+
+    /// Once acquired, jitter across the equidistant point (seen ≈ 0 with
+    /// by_var = 90, where both options tie) must not flip the sign: the old
+    /// rule (`<=` every frame) clicked side to side here.
+    #[test]
+    fn acquired_sign_survives_boundary_noise() {
+        let mut sign = wheel_sign(0.0, 90.0, 20.0);
+        assert_eq!(sign, 1.0);
+        // drift down through the tie (seen = 0) and a little past: the 8°
+        // margin must hold the acquired sign throughout.
+        for k in 0..25 {
+            let seen = 20.0 - k as f32 * 1.0;
+            sign = wheel_sign(sign, 90.0, seen);
+            assert_eq!(sign, 1.0);
+        }
+        // ...while a genuine mirror (far side winning by margin) still flips.
+        assert_eq!(wheel_sign(1.0, 90.0, -80.0), -1.0);
+    }
 }

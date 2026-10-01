@@ -579,7 +579,7 @@ fn settings_columns(ui: &mut Ui, s: &mut Value, dirty: &mut f32, body: Rect, upd
     y += 6.0;
     ui.heading(Rect::new(inner.x, y, inner.w, 28.0), "Controls & sound", Some("volume_up"));
     y += 32.0;
-    sel_setting(ui, s, dirty, "s-keys", row(&mut y), "Driving keys", "drive_keys", &[("omsi", "Custom controls (Controls page)"), ("simple", "W A S D + arrows"), ("wasd", "W A S D only"), ("arrows", "Arrow keys only")]);
+    sel_setting(ui, s, dirty, "s-keys", row(&mut y), "Driving keys", "drive_keys", &[("omsi", "Custom controls (Controls page)"), ("simple", "W A S D (arrows are cameras)"), ("wasd", "W A S D only"), ("arrows", "W A S D off (arrows are cameras)")]);
     let mut vol = get(s, "volume").as_f64().unwrap_or(0.6) as f32;
     if ui.slider("s-vol", row(&mut y), &mut vol, 0.0, 1.0, 0.05, "Volume", &|v| format!("{:.0}%", v * 100.0)) {
         s["volume"] = json!((vol * 100.0).round() / 100.0);
@@ -665,6 +665,7 @@ fn settings_columns(ui: &mut Ui, s: &mut Value, dirty: &mut f32, body: Rect, upd
     toggle_setting(ui, s, dirty, row(&mut y), "Collisions with people", "collision_pedestrians");
     toggle_setting(ui, s, dirty, row(&mut y), "Head moves with the bus", "head_movement");
     toggle_setting(ui, s, dirty, row(&mut y), "Camera glides between viewpoints", "driverview_smooth");
+    toggle_setting(ui, s, dirty, row(&mut y), "Negative zoom (wider field of view)", "zoom_negative");
     toggle_setting(ui, s, dirty, row(&mut y), "Driver's hands in the cab view", "hands_in_cab");
     // (in multiplayer the host's or the server's speed counts)
     sel_setting(ui, s, dirty, "s-timespeed", row(&mut y), "Time speed (not in multiplayer)", "time_speed", &[("1", "Real time"), ("2", "x2"), ("4", "x4"), ("8", "x8"), ("15", "x15"), ("30", "x30")]);

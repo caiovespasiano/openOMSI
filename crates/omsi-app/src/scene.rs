@@ -64,8 +64,6 @@ pub struct ObjectType {
     pub deform: Option<MeshData>,
     /// `[collision_mesh]`: what vehicles actually hit (often much plainer than the model).
     pub collision: Option<MeshData>,
-    /// What of the type stops the outside camera (decided on first use).
-    pub camera: std::sync::OnceLock<crate::camera_arm::BlockerShape>,
     /// The collision mesh as the vehicles meet it (built on first use).
     pub collision_shape: std::sync::OnceLock<Arc<omsi_sim::collision::MeshShape>>,
 }
@@ -153,15 +151,6 @@ impl ObjectType {
             + self.holes.iter().map(|m| m.heap_bytes()).sum::<usize>()
             + self.deform.as_ref().map(|m| m.heap_bytes()).unwrap_or(0)
             + self.collision.as_ref().map(|m| m.heap_bytes()).unwrap_or(0)
-    }
-
-    /// The type's solid shape when it stops the outside camera.
-    pub fn camera_shape(&self) -> Option<&crate::camera_arm::BlockerShape> {
-        Some(
-            self.camera
-                .get_or_init(|| crate::camera_arm::classify(self)),
-        )
-        .filter(|s| s.blocks)
     }
 
     /// (definition, pivot) per loaded mesh, for the scenery script runtime.
@@ -773,8 +762,6 @@ pub struct TileState {
     pub night_modes: Vec<NightMode>,
     /// Collision keys of the tile's `[crashmode_pole]` posts (in `World::poles`).
     pub poles: Vec<i64>,
-    /// The tile's objects that stop the outside camera.
-    pub blockers: Vec<crate::camera_arm::Blocker>,
     /// The boxes of the tile's `[petrolstation]` objects (see `World::petrol_stations`).
     pub petrol_stations: Vec<omsi_sim::collision::Obb>,
     /// Parked cars the tile placed (counted in `World::parked_live`).
@@ -2351,15 +2338,6 @@ impl World {
         }
     }
 
-    /// The ground under a point of the outside camera's arm: the highest face of the roads,
-    /// crossings, surface objects and terrain at or below `top`. A face higher up - the
-    /// roof over a petrol station's forecourt, a bridge deck - is not the ground there (the
-    /// top surface of the raster is, and it put the camera on the canopy); a roof's mesh
-    /// stops the camera instead.
-    pub fn camera_ground(&self, x: f64, y: f64, top: f64) -> Option<f64> {
-        drive_probe(&self.terrains, &self.surfaces, x, y, top).below
-    }
-
     /// The ground painting of one tile: `texture/map/<tile>.map.<layer>.dds`, one 8-bit
     /// alpha mask per `[groundtex]` above the first that the editor's brush has touched on
     /// this tile. That is how OMSI puts asphalt under a car park, cobbles on a side street
@@ -2869,7 +2847,6 @@ impl World {
                 holes,
                 deform,
                 collision,
-                camera: Default::default(),
                 collision_shape: Default::default(),
             }))
         })();
@@ -4616,16 +4593,6 @@ impl World {
                 if let Some(bb) = ot.sco.bounding_box.or_else(|| ot.local_box()) {
                     state.petrol_stations.push(omsi_sim::collision::Obb::from_box(bb, pos, heading));
                 }
-            }
-            // what the outside camera cannot pass through: houses, walls, shelters, canopies
-            // (surface objects too - a petrol station is a drivable [surface] with a roof)
-            if let Some(shape) = ot.camera_shape() {
-                state.blockers.push(crate::camera_arm::Blocker {
-                    ty: Arc::downgrade(&ot),
-                    pos,
-                    xf,
-                    radius: shape.radius(),
-                });
             }
             let lamp = if ot.sco.is_traffic_light {
                 let named = o.extra.first().map(|s| s.trim()).filter(|s| !s.is_empty());
@@ -7362,50 +7329,6 @@ impl World {
         self.object_types
             .lock()
             .retain(|_, t| t.as_ref().map(|t| Arc::strong_count(t) > 1).unwrap_or(true));
-    }
-
-    /// The placed objects that stop the outside camera and may reach into the rectangle
-    /// `lo`..`hi` of the ground plane (with their types, which are alive while a tile uses
-    /// them).
-    pub fn camera_blockers(
-        &self,
-        lo: DVec2,
-        hi: DVec2,
-    ) -> Vec<(Arc<ObjectType>, crate::camera_arm::Blocker)> {
-        let ts = tile_size();
-        // an object is kept with the tile its origin stands in, but a big one (a school, a
-        // supermarket) reaches well into the next: the tiles around are looked at as well
-        let (x0, x1) = (
-            ((lo.x - ts) / ts).floor() as i32,
-            ((hi.x + ts) / ts).floor() as i32,
-        );
-        let (y0, y1) = (
-            ((lo.y - ts) / ts).floor() as i32,
-            ((hi.y + ts) / ts).floor() as i32,
-        );
-        let states = self.tile_state.lock();
-        let mut out = Vec::new();
-        for ty in y0..=y1 {
-            for tx in x0..=x1 {
-                let Some(s) = states.get(&(tx, ty)) else {
-                    continue;
-                };
-                for b in &s.blockers {
-                    let r = b.radius;
-                    if b.pos.x + r < lo.x
-                        || b.pos.x - r > hi.x
-                        || b.pos.y + r < lo.y
-                        || b.pos.y - r > hi.y
-                    {
-                        continue;
-                    }
-                    if let Some(t) = b.ty.upgrade() {
-                        out.push((t, b.clone()));
-                    }
-                }
-            }
-        }
-        out
     }
 
     /// Rebuild the world's lists (stops, obstacles, lights, lamps) from the loaded tiles.

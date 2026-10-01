@@ -86,6 +86,10 @@ pub(crate) struct App {
     pub(crate) last: Instant,
     pub(crate) speed: f32,
     pub(crate) mouse_look: bool,
+    /// Which button holds the look (VSE parity: MMB = orbit, RMB = F1 zoom;
+    /// `None` when neither is held). Kept alongside `mouse_look` so existing
+    /// readers keep working; `mouse_look` is `btn.is_some()`.
+    pub(crate) mouse_look_btn: Option<winit::event::MouseButton>,
     /// Right mouse button toggles the headset picture zoom.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) vr_zoom_active: bool,
@@ -131,15 +135,45 @@ pub(crate) struct App {
     /// Mouse steering: the steering it gives (fraction of the full lock) and how long (s)
     /// it still eases in after being switched on (OMSI: a second, see app_events).
     pub(crate) mouse_steer: (f32, f32),
-    /// Mouse steering past the window's edge: the lock the mouse added while the cursor stood
-    /// pinned at the left or right edge (-1..1 of full lock). OMSI divides the width by the
-    /// speed, and at 30 km/h the edge of the screen was a third of the lock, with nowhere
-    /// further to move.
+    /// VSE corner-boost latch (`BoostHold`): the excess over `0.75*|nx|` held
+    /// while aligned past a corner; cleared at the centre, on side change and
+    /// when the mode goes off. Written ONLY by the VSE ratchet each frame.
     pub(crate) mouse_edge: f32,
+    /// OMSI past-the-edge accumulation (pushing outwards while pinned at the
+    /// border adds lock; coming back spends it first). Kept SEPARATE from the
+    /// VSE latch above: sharing one field let stale accumulation latch full
+    /// lock through the ratchet. Written ONLY by `mouse_past_edge`.
+    pub(crate) mouse_past: f32,
     /// The mouse's throttle and brake (eased in with the steering).
     pub(crate) mouse_pedals: (f32, f32),
     /// The speed mouse steering divides by, smoothed.
     pub(crate) mouse_kmh: f32,
+    /// F3 chase state (VSE `ExteriorChase`): yaw/pitch/dist/filter. Single
+    /// writer pair: input arms write angles, the frame only reads the pose.
+    pub(crate) vse_chase: crate::vse_orbit::VseChase,
+    /// F4 orbit state (VSE `FreeCam` detached controller): target/desired,
+    /// position/dist/yaw/pitch. Vehicle never read after seeding.
+    pub(crate) vse_free: crate::vse_orbit::VseFreeOrbit,
+    /// F4 second press (`free_fly`): the VSE orbit camera (`false`, first
+    /// press — orbit/zoom/pick, no translation) vs the openOMSI fly camera
+    /// (`true` — WASD/QE/arrows translate). Explicit states, never mixed.
+    pub(crate) free_fly: bool,
+    /// The cursor where mouse driving was switched on: wheel and pedals stay
+    /// neutral until the mouse moves from there (reference `mouse_anchor`).
+    pub(crate) mouse_anchor: Option<(f32, f32)>,
+    /// Right-button drag distance this hold, pixels: only a plain click
+    /// (below 4 px) lets go of mouse steering; a drag is precision zoom.
+    pub(crate) rmb_moved: f32,
+    /// Whether the cursor grab above is really holding. While confined, the
+    /// edge-pin warp in `mouse_past_edge` is skipped: warping synthesizes a
+    /// motion event that would feed back into the accumulation and glue the
+    /// cursor (and the wheel) to the border.
+    pub(crate) cursor_confined: bool,
+    /// F1 eased Space return (VSE `ResetCameraCenter` → `Begin/AdvanceEaseTo`,
+    /// look + zoom ease home over `VSE_CAM_EASE_SECS`, never a teleport).
+    /// Driver view only; any `look_by`/`zoom_by` cancels it. Cleared on view
+    /// change by the per-frame advance below.
+    pub(crate) vse_zoom_return: Option<VseZoomReturn>,
     /// The tutorial being run (`--tutorial`), loaded on the first frame.
     pub(crate) tutorial: Option<crate::tutorial::Tutorial>,
     /// OMSI's pedestrian ("ego") view: the free camera walking at eye height on whatever
@@ -266,6 +300,36 @@ pub(crate) struct App {
 impl App {
     #[cfg(windows)]
     pub(crate) fn vr_active(&self) -> bool { self.vr.is_some() }
+
+    /// Confine the cursor to the window while mouse-drive (`O`) is on, and
+    /// release it when it goes off (desktop only; Android never calls this).
+    /// The VSE keeps receiving the mouse through `SetCapture` on drags and
+    /// clamps the normalized position; confining is the stricter equivalent
+    /// the O mode needs so the cursor can never sit on imaginary coordinates
+    /// past the physical border (DPI included: winit reports and confines in
+    /// the same physical pixels the steering divides by).
+    /// Returns whether the grab is really holding (platform may refuse).
+    #[cfg(not(target_os = "android"))]
+    pub(crate) fn confine_cursor(&self, on: bool) -> bool {
+        if let Some(win) = self.window.as_ref() {
+            let mode = if on {
+                winit::window::CursorGrabMode::Confined
+            } else {
+                winit::window::CursorGrabMode::None
+            };
+            if win.set_cursor_grab(mode).is_err() {
+                log::debug!("cursor grab {mode:?} refused by the platform");
+                return false;
+            }
+            return on;
+        }
+        false
+    }
+
+    #[cfg(target_os = "android")]
+    pub(crate) fn confine_cursor(&self, _on: bool) -> bool {
+        false
+    }
 
     #[cfg(not(windows))]
     pub(crate) fn vr_active(&self) -> bool { false }
@@ -898,9 +962,10 @@ pub(crate) fn report_missing_content(w: &World, msg: &mut Option<(String, f32)>)
     }
 }
 
-/// How long the glide between two cockpit cameras takes (seconds). The eye, the turn of the
-/// view and the field of view all follow the same curve over this time. 0 = hard cut.
-pub(crate) const CAM_BLEND_SECS: f32 = 0.6;
+/// How long the glide between two cockpit cameras takes (seconds). VSE parity
+/// (`SimulationPreviewHost.cpp:1397-1398,1402-1407`): `0.54s`, ease-out
+/// `s = 1-(1-t)^3`. 0 = hard cut.
+pub(crate) const CAM_BLEND_SECS: f32 = crate::vse::VSE_CAM_EASE_SECS;
 /// The longest step of time one frame adds to the glide (seconds): a frame that hitches at
 /// the start of a switch does not skip ahead in it.
 pub(crate) const CAM_BLEND_MAX_DT: f32 = 1.0 / 30.0;
@@ -954,6 +1019,15 @@ pub(crate) fn blend_local(a: &omsi_vehicle::Camera, b: &omsi_vehicle::Camera, k:
         pitch,
         extra: b.extra,
     }
+}
+
+/// F1 eased Space return in flight: where the look and the zoom multiplier
+/// started, and how far along the `VSE_CAM_EASE_SECS` ease-out they are.
+#[derive(Clone, Copy)]
+pub(crate) struct VseZoomReturn {
+    pub look_from: (f32, f32),
+    pub zoom_from: f32,
+    pub t: f32,
 }
 
 #[derive(Default)]
@@ -1021,10 +1095,9 @@ impl CamCarry {
 }
 
 impl CamBlend {
-    /// How far along the way from the old camera to the new one: smootherstep of the time
-    /// (no jolt in speed or acceleration at either end).
+    /// VSE parity (`AdvanceDriverEase`): ease-out `s = 1-(1-t)^3`, so adjacent
+    /// seats do not snap through the turn.
     pub fn progress(&self) -> f32 {
-        let t = self.t.clamp(0.0, 1.0);
-        t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+        crate::vse::vse_ease_out(self.t)
     }
 }

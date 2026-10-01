@@ -50,6 +50,18 @@ pub struct VehiclePhysics {
     pub controls: Controls,
     /// Steering wheel input rate for keyboard steering (fraction per second).
     pub steer_rate: f32,
+    /// VSE parity: steering-wheel angle, degrees (`input * half_lock`, half
+    /// `1700/2 = 850` unless the definition says otherwise).
+    pub wheel_deg: f32,
+    /// VSE parity: self-aligning torque, N·m (`-0.025*delta*v^2`, `±15`).
+    /// Single source of truth (VSE `ControlSystems.cpp:90-99` wins over any
+    /// preview/host estimate).
+    pub ffb_nm: f32,
+    /// VSE parity: left/right road-wheel angles of the steered axle, radians
+    /// (Ackermann inner/outer). Positive = right.
+    pub ackermann_rad: (f32, f32),
+    /// VSE parity: bicycle effective radius, m (`L/(tan(delta)*f_curva)`).
+    pub bicycle_radius_m: f32,
 }
 
 impl VehiclePhysics {
@@ -69,7 +81,7 @@ impl VehiclePhysics {
         // inv_min_turnradius = tan(alpha_max) / s  →  alpha_max
         let s = (front - def.rot_pnt_long).abs().max(1.0);
         let max_steer_deg = (def.inv_min_turn_radius * s).atan().to_degrees().clamp(10.0, 60.0);
-        VehiclePhysics { mass_kg: mass_kg.max(500.0), rolling_resistance: def.rolling_resistance, inv_min_turn_radius: def.inv_min_turn_radius, rot_pnt_long: def.rot_pnt_long, wheelbase, wheels, speed: 0.0, accel: Vec3::ZERO, steer_deg: 0.0, max_steer_deg, controls: Controls::default(), steer_rate: 0.8 }
+        VehiclePhysics { mass_kg: mass_kg.max(500.0), rolling_resistance: def.rolling_resistance, inv_min_turn_radius: def.inv_min_turn_radius, rot_pnt_long: def.rot_pnt_long, wheelbase, wheels, speed: 0.0, accel: Vec3::ZERO, steer_deg: 0.0, max_steer_deg, controls: Controls::default(), steer_rate: 0.8, wheel_deg: 0.0, ffb_nm: 0.0, ackermann_rad: (0.0, 0.0), bicycle_radius_m: f32::INFINITY }
     }
 
     /// Advance one step. `drive_torque` is `M_Wheel`, `brake_forces` the per-wheel brake
@@ -81,6 +93,24 @@ impl VehiclePhysics {
         let target = self.controls.steering.clamp(-1.0, 1.0) * self.max_steer_deg;
         let rate = self.max_steer_deg * 2.5 * dt;
         self.steer_deg += (target - self.steer_deg).clamp(-rate, rate);
+        // VSE parity (`VehicleDynamics.cpp:90-91`, `ChassisMotion.cpp:1036-1038`,
+        // `ControlSystems.cpp:90-99`, `ChassisMotion.cpp:909-932`):
+        // wheel angle, single-writer FFB and Ackermann/bicycle state.
+        let input = self.controls.steering.clamp(-1.0, 1.0);
+        self.wheel_deg = input * 850.0;
+        let steer_rad = self.steer_deg.to_radians();
+        self.ffb_nm = Self::ffb_nm(steer_rad, self.speed);
+        let max_rad = self.max_steer_deg.to_radians().max(0.1);
+        let l0 = self.wheelbase.max(1.5);
+        let track = self
+            .wheels
+            .first()
+            .map(|a| (a[1].lat - a[0].lat).abs())
+            .unwrap_or(2.0)
+            .max(1.2);
+        let (inner, outer) = Self::ackermann(steer_rad, max_rad, l0, track);
+        self.ackermann_rad = if steer_rad >= 0.0 { (outer, inner) } else { (inner, outer) };
+        self.bicycle_radius_m = Self::bicycle_radius(l0, steer_rad, 1.0);
 
         // forces along the forward axis
         let driven_radius = self.wheels.iter().find(|w| w[0].driven).or(self.wheels.first()).map(|w| w[0].radius).unwrap_or(0.5);
@@ -127,6 +157,50 @@ impl VehiclePhysics {
 
     pub fn velocity_kmh(&self) -> f32 {
         self.speed * 3.6
+    }
+
+    /// VSE parity FFB, N·m: `T = -0.025*delta*v^2`, clamp `±15`.
+    pub fn ffb_nm(steer_rad: f32, v_mps: f32) -> f32 {
+        (-0.025 * steer_rad * v_mps * v_mps).clamp(-15.0, 15.0)
+    }
+
+    /// VSE parity Ackermann magnitudes, radians: `r_in = L0/tan(inner)`,
+    /// `r_out = r_in + track`, `outer = atan(L0/r_out)`.
+    pub fn ackermann(delta_cmd: f32, max_steer_rad: f32, l0_m: f32, track_m: f32) -> (f32, f32) {
+        let max = max_steer_rad.max(0.1);
+        let l0 = l0_m.max(1.5);
+        let track = track_m.max(1.2);
+        let inner = (delta_cmd / max).clamp(-1.0, 1.0).abs() * max;
+        if inner <= 1e-5 {
+            return (0.0, 0.0);
+        }
+        let r_in = l0 / inner.tan();
+        (inner, (l0 / (r_in + track)).atan())
+    }
+
+    /// VSE parity bicycle radius, m: `R = L/(tan(delta)*f_curva)`.
+    pub fn bicycle_radius(l_m: f32, delta_rad: f32, f_curva: f32) -> f32 {
+        let t = delta_rad.tan() * f_curva;
+        if t.abs() < 1e-6 { f32::INFINITY } else { l_m / t }
+    }
+
+    /// VSE parity curve authority (`CurveAuthority.hpp` table).
+    pub fn curve_authority(layout: &str) -> f32 {
+        match layout {
+            "Rigid4x2" => 1.0,
+            "Rigid6x2" => 0.70,
+            "Rigid6x2Dir" => 0.95,
+            "ArtPusher" => 0.90,
+            "ArtMda" => 0.88,
+            "ArtPuller" => 0.85,
+            _ => 1.0,
+        }
+    }
+
+    /// VSE parity directional rear steer: `ratio*delta*fade`, fade `25→40 km/h`.
+    pub fn directional(delta: f32, v_kmh: f32, ratio: f32, max_rad: f32) -> f32 {
+        let fade = ((40.0 - v_kmh) / 15.0).clamp(0.0, 1.0);
+        (ratio * delta * fade).clamp(-max_rad, max_rad)
     }
 
     /// Ground height under the vehicle, used to follow the terrain.

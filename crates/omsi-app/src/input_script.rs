@@ -217,8 +217,8 @@ impl App {
                     && !own
                     && (fallback_action(code, &self.args.drive_keys).is_some()
                     || matches!(code, KeyCode::KeyZ | KeyCode::KeyX | KeyCode::KeyC | KeyCode::KeyI | KeyCode::KeyL));
-                // the arrows are never the camera keys without Ctrl (they move: drive, or turn the
-                // head when held, with any other modifier and in every layout); only Ctrl+Left/Right
+                // VSE parity: the arrows never drive (they are F1/F2 camera
+                // previous/next, or orbit/glance per frame); only Ctrl+Left/Right
                 // switch the interior camera, below.
                 let plain_arrow = matches!(code, KeyCode::ArrowLeft | KeyCode::ArrowRight) && !ctrl;
                 if let Some(scan) = keys::dik_code(code).filter(|_| !ours) {
@@ -239,7 +239,8 @@ impl App {
                         self.game_action("toggel_mouse_ctrl");
                         return;
                     }
-                    // the interior cameras: Ctrl+Left/Right (the arrows drive)
+                    // the interior cameras: Ctrl+Left/Right (plain arrows are cameras
+                    // too, below — VSE parity, arrows never drive)
                     // a manual gearbox: Ctrl+Up / Ctrl+Down shift up and down - the stock key file
                     // has no keys for it, and a bus like the LiAZ MKPP stayed in its gear
                     KeyCode::ArrowUp | KeyCode::ArrowDown if ctrl && !alt => {
@@ -256,6 +257,43 @@ impl App {
                     KeyCode::ArrowRight if ctrl => {
                         self.game_action("view_interiorcam_plus");
                         return;
+                    }
+                    // VSE parity (`SimulationPreviewHost.cpp:2162-2207`): plain
+                    // arrows are F1/F2 camera previous/next (circular wrap inside
+                    // `game_action`), never steering. Plain Up/Down in F1/F2 do
+                    // nothing (VSE: no tilt); Up/Down in F3 orbit per frame.
+                    KeyCode::ArrowLeft if !ctrl && !alt && !shift_now
+                        && matches!(self.view.as_str(), "driver" | "pax") =>
+                    {
+                        self.game_action("view_interiorcam_minus");
+                        return;
+                    }
+                    KeyCode::ArrowRight if !ctrl && !alt && !shift_now
+                        && matches!(self.view.as_str(), "driver" | "pax") =>
+                    {
+                        self.game_action("view_interiorcam_plus");
+                        return;
+                    }
+                    KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight if !ctrl && !alt && !shift_now && matches!(self.view.as_str(), "driver" | "pax" | "outside") => {
+                        return;
+                    }
+                    // VSE parity (`PollDriverGearInput` edge): LShift = GearUp,
+                    // LCtrl = GearDown on automatic/automated boxes
+                    // (`GearDown <- N -> GearUp` stepping lives in `shift_gear`).
+                    // Manual boxes ignore these (their gate is N/R/1-7 via the bus).
+                    // Only consumed when the gear actually shifts; otherwise the
+                    // press falls through (Shift/Ctrl stay modifiers for chords).
+                    KeyCode::ShiftLeft | KeyCode::ShiftRight if !ctrl && !alt => {
+                        if self.game_menu.is_none() && self.placing.is_none() && self.editor.is_none() && self.on_foot.is_none() && matches!(self.view.as_str(), "driver" | "outside" | "pax") && !self.is_manual_gearbox() {
+                            self.shift_gear(true);
+                            return;
+                        }
+                    }
+                    KeyCode::ControlLeft | KeyCode::ControlRight if !alt && !shift_now => {
+                        if self.game_menu.is_none() && self.placing.is_none() && self.editor.is_none() && self.on_foot.is_none() && matches!(self.view.as_str(), "driver" | "outside" | "pax") && !self.is_manual_gearbox() {
+                            self.shift_gear(false);
+                            return;
+                        }
                     }
                     // OMSI's `screenshot` (Ctrl+Shift+P: 25 / 6), and F12 as most games have it
                     KeyCode::KeyP if ctrl && shift_now => {
@@ -475,18 +513,12 @@ impl App {
                     _ => {}
                 }
             }
-            // the arrow keys drive when a bus is being driven (the free camera keeps them)
-            // (a key the player bound to something else is theirs, not the preset's)
+            // the arrow keys never drive (VSE parity); with a wheel the preset
+            // still only decides about WASD (a key the player bound to something
+            // else is theirs, not the preset's)
             let own = keys::dik_code(code).is_some_and(|s| self.own_keys.contains(&s));
-            let wheel = self.controllers.as_ref().is_some_and(|c| c.wheel_steering());
-            let wasd = if own {
+            let wasd = if own || self.args.drive_keys == "omsi" || self.args.drive_keys == "arrows" {
                 "omsi"
-            } else if wheel {
-                // (with a wheel steering, the arrow keys are OMSI's: they look around)
-                match self.args.drive_keys.as_str() {
-                    "arrows" | "omsi" => "omsi",
-                    _ => "wasd",
-                }
             } else {
                 self.args.drive_keys.as_str()
             };
@@ -655,30 +687,78 @@ impl App {
     }
 
     /// Zoom the view inside the bus by `notches` of the mouse wheel (in: positive).
+    /// VSE parity (`OnInteriorZoomDrag`, `InteriorDisplayFov`): full zoom is
+    /// `6.5x` (`base/(1+5.5*z)`), so the multiplier reaches `~0.154`.
+    /// Past the authored FOV ("negative zoom") only with the menu option on.
     pub(crate) fn zoom_by(&mut self, notches: f32) {
+        self.vse_zoom_return = None;
+        let max = if self.settings.zoom_negative { 1.6 } else { 1.0 };
         let z = self.view_zoom.entry(self.view.clone()).or_insert(1.0);
-        *z = (*z * (1.0 - 0.08 * notches.clamp(-5.0, 5.0))).clamp(0.2, 1.6);
+        *z = (*z * (1.0 - 0.08 * notches.clamp(-5.0, 5.0))).clamp(0.154, max);
     }
 
     pub(crate) fn look_by(&mut self, dx: f32, dy: f32) {
         self.sync_view_look();
+        // a hand on the view cancels an eased Space return (VSE: a new input
+        // starts a new ease; here the user simply takes over).
+        self.vse_zoom_return = None;
         if self.view == "foot" {
             self.foot_look(dx, dy);
             return;
         }
         if self.view == "free" || self.player.is_none() {
-            if let Some(cam) = self.camera.as_mut() {
+            // F4 VSE-orbit mode turns the machine (degrees, no pixel gain);
+            // fly / player-less map keep turning the camera in place.
+            if self.view == "free" && !self.free_fly && !self.ego && self.player.is_some() {
+                self.vse_free.nudge(dx, -dy);
+            } else if let Some(cam) = self.camera.as_mut() {
                 cam.yaw = (cam.yaw + dx).rem_euclid(360.0);
                 cam.pitch = (cam.pitch - dy).clamp(-89.0, 89.0);
             }
+        } else if self.view == "outside" {
+            // F3 rebuilt: degree sources (scripts, keys, pad) nudge the chase
+            // machine directly (same clamp, no pixel gain). Mouse drags feed
+            // raw pixels in the motion handler (VSE `OnChaseOrbit` gain).
+            // `look` is no longer rendered for outside; kept untouched.
+            self.vse_chase.nudge_deg(dx, dy);
+        } else if self.view == "driver" {
+            // F1 head (VSE `OnInteriorOrbit`): yaw `±90`; the downward stop
+            // is the VSE `-35°` minus the zoom margin (`vse_pitch_min_for_zoom`,
+            // zero at rest — a zoomed window travels inside the normal frame).
+            // F2 keeps the fixed VSE `-35°` (frozen behavior, see below).
+            let base = self
+                .player
+                .as_ref()
+                .and_then(|p| {
+                    let def = &p.vehicle.ty.def;
+                    let n = def.cameras_driver.len().max(1);
+                    def.cameras_driver
+                        .get((def.camera_std + p.cam_choice.0) % n)
+                        .map(|c| c.fov)
+                })
+                .filter(|f| *f > 1.0)
+                .unwrap_or(60.0);
+            let mult = self.view_zoom.get(&self.view).copied().unwrap_or(1.0);
+            self.look.0 = (self.look.0 + dx).clamp(
+                -crate::vse::VSE_LOOK_YAW_CLAMP,
+                crate::vse::VSE_LOOK_YAW_CLAMP,
+            );
+            self.look.1 = (self.look.1 - dy).clamp(
+                crate::vse::vse_pitch_min_for_zoom(base, mult),
+                crate::vse::VSE_LOOK_PITCH_MAX,
+            );
         } else {
-            self.look.0 += dx;
-            self.look.1 = (self.look.1 - dy).clamp(-85.0, 85.0);
-            if self.view != "outside" {
-                self.look.0 = self.look.0.clamp(-140.0, 140.0);
-            } else {
-                self.look.0 = self.look.0.rem_euclid(360.0);
-            }
+            // F2 head, frozen (VSE `OnInteriorOrbit` stops `±90` / `-35..+35`):
+            // byte-identical to the validated behavior; the zoom-aware stop
+            // above is F1 only.
+            self.look.0 = (self.look.0 + dx).clamp(
+                -crate::vse::VSE_LOOK_YAW_CLAMP,
+                crate::vse::VSE_LOOK_YAW_CLAMP,
+            );
+            self.look.1 = (self.look.1 - dy).clamp(
+                crate::vse::VSE_LOOK_PITCH_MIN,
+                crate::vse::VSE_LOOK_PITCH_MAX,
+            );
         }
     }
 
@@ -827,17 +907,22 @@ impl App {
         let Some(w) = self.surface.as_ref().map(|s| s.config.width as f32) else { return };
         let per_px = 2.0 / w.max(1.0);
         let (at_left, at_right) = (self.cursor.0 <= 2.0, self.cursor.0 >= w - 3.0);
-        let before = self.mouse_edge;
+        let before = self.mouse_past;
         if (at_right && dx > 0.0) || (at_left && dx < 0.0) {
-            self.mouse_edge = (self.mouse_edge + dx * per_px).clamp(-2.0, 2.0);
-        } else if (self.mouse_edge > 0.0 && dx < 0.0) || (self.mouse_edge < 0.0 && dx > 0.0) {
-            let m = self.mouse_edge + dx * per_px;
-            self.mouse_edge = if m.signum() != before.signum() { 0.0 } else { m };
-            // (the cursor stays where it was: the move went into the wheel)
-            if let Some(win) = self.window.as_ref() {
-                let x = if before > 0.0 { w - 2.0 } else { 1.0 };
-                let _ = win.set_cursor_position(winit::dpi::PhysicalPosition::new(x as f64, self.cursor.1 as f64));
-                self.cursor.0 = x;
+            self.mouse_past = (self.mouse_past + dx * per_px).clamp(-2.0, 2.0);
+        } else if (self.mouse_past > 0.0 && dx < 0.0) || (self.mouse_past < 0.0 && dx > 0.0) {
+            let m = self.mouse_past + dx * per_px;
+            self.mouse_past = if m.signum() != before.signum() { 0.0 } else { m };
+            // (the cursor stays where it was: the move went into the wheel.
+            // Skipped while confined: the OS already holds the cursor at the
+            // border, and warping would synthesize a motion event that feeds
+            // back into this same accumulation, gluing cursor and wheel.)
+            if !self.cursor_confined {
+                if let Some(win) = self.window.as_ref() {
+                    let x = if before > 0.0 { w - 2.0 } else { 1.0 };
+                    let _ = win.set_cursor_position(winit::dpi::PhysicalPosition::new(x as f64, self.cursor.1 as f64));
+                    self.cursor.0 = x;
+                }
             }
         }
     }
@@ -956,6 +1041,56 @@ impl App {
         // on foot: the own bus's switches, doors and flaps from inside it or standing by it
         if self.view == "foot" && !self.foot_reaches_bus() {
             return;
+        }
+        // F4 retarget, VSE-orbit mode only (fly mode falls through to the
+        // cockpit/html logic below): LMB marches terrain (`ScreenPointTo-
+        // Terrain`, 14 bisections) with `Z=0` fallback; Alt tries the bus mesh
+        // first, then terrain, then `Z=0`. Hit becomes the orbit target via
+        // `SetOrbitTargetSmooth`. Desktop-only; touch has its own gestures.
+        if pressed
+            && self.view == "free"
+            && !self.free_fly
+            && !self.ego
+            && self.game_menu.is_none()
+        {
+            let alt = self.keys.contains(&KeyCode::AltLeft) || self.keys.contains(&KeyCode::AltRight);
+            let shift = self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+            if !shift {
+                if let (Some(cam), Some(s), Some(w)) =
+                    (self.camera.as_ref(), self.surface.as_ref(), self.world.clone())
+                {
+                    let (o, d) = crate::camera_util::cursor_ray(
+                        cam,
+                        self.cursor.0,
+                        self.cursor.1,
+                        s.config.width as f32,
+                        s.config.height as f32,
+                    );
+                    let oo = [o.x, o.y, o.z];
+                    let dd = [d.x as f64, d.y as f64, d.z as f64];
+                    let mut hit: Option<[f64; 3]> = None;
+                    if alt {
+                        if let Some(p) = self.player.as_ref() {
+                            if let Some(pt) = p.surface_hit(o, d) {
+                                hit = Some([pt.x, pt.y, pt.z]);
+                            } else if let Some(t) = p.body_hit(o, d) {
+                                let q = o + (d * t).as_dvec3();
+                                hit = Some([q.x, q.y, q.z]);
+                            }
+                        }
+                    }
+                    if hit.is_none() {
+                        hit = crate::vse_orbit::vse_pick_ground(oo, dd, &|x, y| {
+                            w.ground_height(x, y)
+                        })
+                        .or_else(|| crate::vse_orbit::vse_plane_fallback(oo, dd));
+                    }
+                    if let Some(h) = hit {
+                        self.vse_free.set_target_smooth(h[0], h[1], h[2]);
+                        return;
+                    }
+                }
+            }
         }
         #[cfg(windows)]
         if self.vr.is_some() && self.mouse_drive && self.game_menu.is_none()
@@ -1162,7 +1297,15 @@ impl App {
                 }
                 "look" => self.look = xy(),
                 // `orbit <m>`: how far the outside camera stands off, as the mouse wheel sets it
-                "orbit" => self.orbit = xy().0.clamp(ORBIT_MIN, ORBIT_MAX),
+                "orbit" => {
+                    // F3 machine owns the distance (legacy field mirrored).
+                    let d = xy().0.clamp(
+                        crate::vse::VSE_CHASE_DIST_MIN,
+                        crate::vse::VSE_CHASE_DIST_MAX,
+                    );
+                    self.vse_chase.dist = d;
+                    self.orbit = d;
+                }
                 // `set name=value`: put a script variable somewhere (a switch half way)
                 "set" => {
                     if let (Some((k, v)), Some(p)) = (arg.split_once('='), self.player.as_mut()) {
@@ -2137,16 +2280,69 @@ impl App {
             "view_set_passenger" => self.view = "pax".into(),
             "view_set_outside" => self.view = "outside".into(),
             "view_set_map" => {
-                // OMSI's map view (F4) is a camera flown over the map; the city map of the
-                // navigator stays on Shift+M
-                if self.view != "free" {
-                    if let (Some(cam), Some(p)) = (self.camera.as_mut(), self.player.as_ref()) {
-                        let h = (p.vehicle.heading as f32).to_radians();
-                        cam.position = p.vehicle.position
-                            + glam::DVec3::new(-(h.sin() as f64) * 25.0, -(h.cos() as f64) * 25.0, 30.0);
-                        cam.yaw = p.vehicle.heading as f32;
-                        cam.pitch = -45.0;
+                // F4 first press = VSE free camera (`InitFreeCamFromChase`):
+                // respawn from the current F3 chase pose, then detach — the
+                // vehicle may drive away while the camera stays in the world.
+                // LMB retargets via `vse_orbit` march + `Z=0` fallback;
+                // Alt+MMB adds the mesh/sphere path (see `vse.rs`).
+                // F4 second press (already free) = openOMSI fly camera
+                // (`free_fly`): same pose, plus WASD/QE translation. The two
+                // states never mix; F3 re-entry always restarts at VSE mode.
+                let (snap, fly) = crate::vse::vse_free_press(self.view == "free", self.free_fly);
+                self.free_fly = fly;
+                if snap {
+                    // VSE `InitFreeCamFromChase`: same pose math as the chase
+                    // (machine state, smoothed pivot), then detach — later
+                    // frames never read the vehicle again.
+                    if let Some(p) = self.player.as_ref() {
+                        let pos = p.vehicle.position;
+                        let center = p.vehicle.ty.def.camera_outside_center;
+                        let base = crate::vse_orbit::pivot_base(
+                            [pos.x, pos.y, pos.z],
+                            p.vehicle.heading,
+                            center,
+                        );
+                        let pz = if self.vse_chase.pivot_valid {
+                            self.vse_chase.pivot_z
+                        } else {
+                            base[2]
+                        };
+                        let (cy, cp, d) = self.vse_chase.seed();
+                        self.vse_free.seed_from_chase(
+                            base, pz, p.vehicle.heading, cy, cp, d,
+                        );
+                        if let Some(cam) = self.camera.as_mut() {
+                            let (yaw, pitch) = self.vse_free.view_angles();
+                            cam.position = DVec3::new(
+                                self.vse_free.position[0],
+                                self.vse_free.position[1],
+                                self.vse_free.position[2],
+                            );
+                            cam.yaw = yaw;
+                            cam.pitch = pitch;
+                            cam.roll = 0.0;
+                        }
                     }
+                    self.service_msg = Some(("Free camera: orbit/zoom/pick (F4 again for fly mode)".into(), 4.0));
+                } else {
+                    // back to VSE-orbit mode: re-anchor the machine on the
+                    // current pose so nothing jumps (position kept, orbit
+                    // angles resynced from it).
+                    if !fly {
+                        if let Some(cam) = self.camera.as_ref() {
+                            let f = cam.forward();
+                            let tgt = cam.position + (f * self.vse_free.dist.max(0.5)).as_dvec3();
+                            self.vse_free.set_look_at(
+                                [cam.position.x, cam.position.y, cam.position.z],
+                                [tgt.x, tgt.y, tgt.z],
+                            );
+                            self.vse_free.set_target(tgt.x, tgt.y, tgt.z);
+                        }
+                    }
+                    self.service_msg = Some((
+                        if fly { "Fly mode: W A S D + Q/E move, arrows turn" } else { "Free camera: orbit/zoom/pick" }.into(),
+                        4.0,
+                    ));
                 }
                 self.view = "free".into();
                 self.ego = false;
@@ -2185,18 +2381,52 @@ impl App {
             "view_reset_direction" => {
                 self.look = (0.0, 0.0);
                 self.view_zoom.remove(&self.view);
+                if self.view == "outside" {
+                    self.vse_chase.reset();
+                }
                 #[cfg(windows)]
                 if let Some(vr) = self.vr.as_mut() { vr.recenter(); }
             }
             // (Space in Inputs/keyboard.cfg: every view looks ahead again, and back to the
-            // standard camera - "center")
+            // standard camera - "center". F1 eases back like the VSE
+            // (`ResetCameraCenter` → `Begin/AdvanceDriverEaseTo`, same 0.54s
+            // ease-out, zoom included) while "Drive Head Smooth Movement" is
+            // ON; OFF cuts instantly. Every other view resets at once, and
+            // F2 stays exactly as validated.)
             "view_reset_all_directions" => {
-                self.look = (0.0, 0.0);
-                self.view_looks.clear();
-                self.view_zoom.clear();
-                self.orbit = ORBIT_DEFAULT;
-                if let Some(p) = self.player.as_mut() {
-                    p.cam_choice = (0, 0);
+                if self.view == "driver" && crate::vse::vse_glide_active(self.settings.driverview_smooth) {
+                    let look = self.look;
+                    let zoom = self.view_zoom.get(&self.view).copied().unwrap_or(1.0);
+                    self.orbit = ORBIT_DEFAULT;
+                    if let Some(p) = self.player.as_mut() {
+                        p.cam_choice = (0, 0);
+                    }
+                    if look != (0.0, 0.0) || zoom != 1.0 {
+                        self.vse_zoom_return = Some(crate::app::VseZoomReturn {
+                            look_from: look,
+                            zoom_from: zoom,
+                            t: 0.0,
+                        });
+                    } else {
+                        self.vse_zoom_return = None;
+                        self.look = (0.0, 0.0);
+                        self.view_looks.clear();
+                        self.view_zoom.remove(&self.view);
+                    }
+                } else {
+                    // F3 Space = VSE `ResetCameraCenter` chase part (angles
+                    // home, distance kept); other views reset at once, F2
+                    // exactly as validated.
+                    if self.view == "outside" {
+                        self.vse_chase.reset();
+                    }
+                    self.look = (0.0, 0.0);
+                    self.view_looks.clear();
+                    self.view_zoom.clear();
+                    self.orbit = ORBIT_DEFAULT;
+                    if let Some(p) = self.player.as_mut() {
+                        p.cam_choice = (0, 0);
+                    }
                 }
             }
             "view_toggle_viewpoint" | "view_interiorcam_plus" | "view_interiorcam_minus" => {
@@ -2219,13 +2449,45 @@ impl App {
             }
             "toggel_mouse_ctrl" => {
                 self.mouse_drive = !self.mouse_drive;
-                if !self.mouse_drive {
-                    crate::player::keep_wheel(self.player.as_mut());
+                if self.mouse_drive {
+                    // taking over: held keys must not stick the pedals or the
+                    // wheel (reference handoff) — key states go, the fade
+                    // below still eases from the wheel's place, no teleport.
+                    if let Some(p) = self.player.as_mut() {
+                        p.axes.release_all();
+                        p.axes.throttle = 0.0;
+                        p.axes.brake = 0.0;
+                        p.axes.steering = 0.0;
+                        p.axes.clutch = 0.0;
+                        p.axes.hold_steer = false;
+                    }
+                } else if let Some(p) = self.player.as_mut() {
+                    // handing back: the keys and the return carry on from where
+                    // the mouse left the wheel and the pedals, and the wheel
+                    // stays there until steered by hand (reference `hold_steer`;
+                    // never a reset, never a jump).
+                    p.axes.release_all();
+                    p.axes.throttle = self.mouse_pedals.0;
+                    p.axes.brake = self.mouse_pedals.1;
+                    p.axes.steering = self.mouse_steer.0;
+                    p.axes.hold_steer = true;
+                    self.mouse_edge = 0.0;
+                    self.mouse_past = 0.0;
+                } else {
+                    self.mouse_edge = 0.0;
+                    self.mouse_past = 0.0;
                 }
+                // starts neutral until the mouse moves from where it was
+                // (reference `mouse_anchor`).
+                self.mouse_anchor = if self.mouse_drive { Some(self.cursor) } else { None };
                 #[cfg(windows)]
                 if !self.mouse_drive {
                     self.reset_vr_pointer();
                 }
+                // VSE capture, stricter: while O is on the cursor is confined
+                // to the physical window so it can never report imaginary
+                // coordinates past the border (DPI included).
+                self.cursor_confined = self.confine_cursor(self.mouse_drive);
                 // (the wheel eases from where it is to the cursor for the first second)
                 self.mouse_steer = (self.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
                 self.mouse_pedals = self.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
@@ -2285,6 +2547,20 @@ impl App {
         p.vehicle.trigger(n);
         p.vehicle.trigger(&format!("{n}_off"));
         true
+    }
+
+    /// VSE parity: gearbox authority follows the transmission type
+    /// (`Drivetrain::DriverHasGearAuthority` — manual always, automated only
+    /// with override, automatic/dct never). Same probe as the phone's gearbox
+    /// (`touch.rs`): a script that reads the clutch pedal is a manual one.
+    /// `N/R/1-7` reach the bus through `p.key` either way; the bus's own
+    /// triggers filter them (a manual ignores `automatic_*`, an automatic
+    /// ignores `kw_s_*`), so no global `match key -> gear` exists.
+    pub(crate) fn is_manual_gearbox(&self) -> bool {
+        self.player
+            .as_ref()
+            .map(|p| p.vehicle.ty.program.manual_gearbox())
+            .unwrap_or(false)
     }
 
     pub(crate) fn toggle_pause(&mut self) {

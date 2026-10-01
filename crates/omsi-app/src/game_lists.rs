@@ -120,6 +120,10 @@ pub(crate) fn items(app: &App, kind: &ListKind) -> Vec<(String, String)> {
             out.push((format!("{}: {}", tr("Sun shadows"), tr(on_off(s.shadows))), "shadows".into()));
             out.push((format!("{}: {}", tr("Head movement"), tr(on_off(s.head_movement))), "head".into()));
             out.push((format!("{}: {}", tr("Camera glides between viewpoints"), tr(on_off(s.driverview_smooth))), "cam_smooth".into()));
+            out.push((
+                format!("{}: {}", tr("Negative zoom (wider than the bus's field of view)"), tr(on_off(s.zoom_negative))),
+                "zoom_neg".into(),
+            ));
             out.push((format!("{}: {}", tr("Collisions with objects"), tr(on_off(s.collision_objects))), "coll_objects".into()));
             out.push((format!("{}: {}", tr("Collisions with vehicles"), tr(on_off(s.collision_vehicles))), "coll_vehicles".into()));
             out.push((format!("{}: {}", tr("Steering with the mouse"), tr(on_off(app.mouse_drive))), "mouse".into()));
@@ -308,6 +312,10 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                     s.driverview_smooth = !s.driverview_smooth;
                     Some(("driverview_smooth", (s.driverview_smooth as u8).to_string()))
                 }
+                "zoom_neg" => {
+                    s.zoom_negative = !s.zoom_negative;
+                    Some(("zoom_negative", (s.zoom_negative as u8).to_string()))
+                }
                 // (at once: stuck under a bridge a map made too low, the bus drives on)
                 "coll_objects" => {
                     s.collision_objects = !s.collision_objects;
@@ -326,11 +334,14 @@ pub(crate) fn run(app: &mut App, kind: &ListKind, action: &str) -> Option<ListKi
                     app.mouse_drive = !app.mouse_drive;
                     if !app.mouse_drive {
                         crate::player::keep_wheel(app.player.as_mut());
+                        app.mouse_edge = 0.0;
+                        app.mouse_past = 0.0;
                     }
                     #[cfg(windows)]
                     if !app.mouse_drive {
                         app.reset_vr_pointer();
                     }
+                    app.cursor_confined = app.confine_cursor(app.mouse_drive);
                     app.mouse_steer = (app.player.as_ref().map(|p| p.vehicle.physics.controls.steering).unwrap_or(0.0), 1.0);
                     app.mouse_pedals = app.player.as_ref().map(|p| (p.vehicle.physics.controls.throttle, p.vehicle.physics.controls.brake)).unwrap_or((0.0, 0.0));
                     None

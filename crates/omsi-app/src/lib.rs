@@ -24,7 +24,6 @@ mod placing;
 mod mt;
 mod updater;
 mod ambience;
-mod camera_arm;
 mod career;
 mod describe;
 mod editor;
@@ -86,6 +85,8 @@ mod stock_keys;
 mod startup;
 mod traffic_link;
 mod tutorial;
+mod vse;
+mod vse_orbit;
 mod weather_setup;
 mod weather_cycle;
 mod world_load;
@@ -462,6 +463,7 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         last: Instant::now(),
         speed: 30.0,
         mouse_look: false,
+        mouse_look_btn: None,
         vr_zoom_active: false,
         hover: None,
         hover_part: None,
@@ -484,8 +486,16 @@ pub(crate) fn make_app(mut args: Args, server_cfg: Option<server::ServerCfg>) ->
         mouse_drive: false,
         mouse_steer: (0.0, 0.0),
         mouse_edge: 0.0,
+        mouse_past: 0.0,
         mouse_pedals: (0.0, 0.0),
         mouse_kmh: 0.0,
+        vse_chase: crate::vse_orbit::VseChase::new(6.08),
+        vse_free: crate::vse_orbit::VseFreeOrbit::default(),
+        free_fly: false,
+        mouse_anchor: None,
+        rmb_moved: 0.0,
+        cursor_confined: false,
+        vse_zoom_return: None,
         tutorial: None,
         ego: false,
         on_foot: None,
