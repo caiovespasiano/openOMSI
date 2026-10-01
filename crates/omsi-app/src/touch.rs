@@ -561,6 +561,25 @@ impl App {
             return;
         }
         let d = looks[0].distance(looks[1]).max(1.0);
+        if self.view == "driver" && self.player.is_some() {
+            // F1 precision zoom (the RMB+drag zoom on desktop): a pinch spreads
+            // apart to zoom in, together to zoom out — the same FOV-multiplier
+            // curve at the F1 gain, driven by the fingers' pixel spread delta.
+            // (The desktop wheel path stays a no-op in F1; this is the touch
+            // gesture that reaches the same zoom state.)
+            if let Some(d0) = self.touch.pinch {
+                let dy = d - d0;
+                if dy.abs() > 2.0 {
+                    let m = self.view_zoom.get(&self.view).copied().unwrap_or(1.0);
+                    self.view_zoom.insert(
+                        self.view.clone(),
+                        crate::vse::vse_precision_zoom_step(m, dy, crate::vse::VSE_F1_ZOOM_INTENT),
+                    );
+                    self.touch.pinch = Some(d);
+                }
+            }
+            return;
+        }
         if let Some(d0) = self.touch.pinch {
             let amount = (d - d0) / (28.0 * self.touch.u);
             if amount.abs() > 0.05 {

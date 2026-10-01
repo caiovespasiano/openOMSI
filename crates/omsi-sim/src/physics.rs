@@ -50,17 +50,17 @@ pub struct VehiclePhysics {
     pub controls: Controls,
     /// Steering wheel input rate for keyboard steering (fraction per second).
     pub steer_rate: f32,
-    /// VSE parity: steering-wheel angle, degrees (`input * half_lock`, half
+    /// Steering-wheel angle, degrees (`input * half_lock`, half
     /// `1700/2 = 850` unless the definition says otherwise).
     pub wheel_deg: f32,
-    /// VSE parity: self-aligning torque, N·m (`-0.025*delta*v^2`, `±15`).
-    /// Single source of truth (VSE `ControlSystems.cpp:90-99` wins over any
-    /// preview/host estimate).
+    /// Self-aligning torque, N·m (`-0.025*delta*v^2`, `±15`).
+    /// Single source of truth for the self-aligning torque (authoritative
+    /// over any preview/host estimate).
     pub ffb_nm: f32,
-    /// VSE parity: left/right road-wheel angles of the steered axle, radians
+    /// Left/right road-wheel angles of the steered axle, radians
     /// (Ackermann inner/outer). Positive = right.
     pub ackermann_rad: (f32, f32),
-    /// VSE parity: bicycle effective radius, m (`L/(tan(delta)*f_curva)`).
+    /// Bicycle effective radius, m (`L/(tan(delta)*f_curva)`).
     pub bicycle_radius_m: f32,
 }
 
@@ -93,9 +93,7 @@ impl VehiclePhysics {
         let target = self.controls.steering.clamp(-1.0, 1.0) * self.max_steer_deg;
         let rate = self.max_steer_deg * 2.5 * dt;
         self.steer_deg += (target - self.steer_deg).clamp(-rate, rate);
-        // VSE parity (`VehicleDynamics.cpp:90-91`, `ChassisMotion.cpp:1036-1038`,
-        // `ControlSystems.cpp:90-99`, `ChassisMotion.cpp:909-932`):
-        // wheel angle, single-writer FFB and Ackermann/bicycle state.
+        // Wheel angle, single-writer FFB and Ackermann/bicycle state.
         let input = self.controls.steering.clamp(-1.0, 1.0);
         self.wheel_deg = input * 850.0;
         let steer_rad = self.steer_deg.to_radians();
@@ -159,12 +157,12 @@ impl VehiclePhysics {
         self.speed * 3.6
     }
 
-    /// VSE parity FFB, N·m: `T = -0.025*delta*v^2`, clamp `±15`.
+    /// FFB, N·m: `T = -0.025*delta*v^2`, clamp `±15`.
     pub fn ffb_nm(steer_rad: f32, v_mps: f32) -> f32 {
         (-0.025 * steer_rad * v_mps * v_mps).clamp(-15.0, 15.0)
     }
 
-    /// VSE parity Ackermann magnitudes, radians: `r_in = L0/tan(inner)`,
+    /// Ackermann magnitudes, radians: `r_in = L0/tan(inner)`,
     /// `r_out = r_in + track`, `outer = atan(L0/r_out)`.
     pub fn ackermann(delta_cmd: f32, max_steer_rad: f32, l0_m: f32, track_m: f32) -> (f32, f32) {
         let max = max_steer_rad.max(0.1);
@@ -178,13 +176,13 @@ impl VehiclePhysics {
         (inner, (l0 / (r_in + track)).atan())
     }
 
-    /// VSE parity bicycle radius, m: `R = L/(tan(delta)*f_curva)`.
+    /// Bicycle radius, m: `R = L/(tan(delta)*f_curva)`.
     pub fn bicycle_radius(l_m: f32, delta_rad: f32, f_curva: f32) -> f32 {
         let t = delta_rad.tan() * f_curva;
         if t.abs() < 1e-6 { f32::INFINITY } else { l_m / t }
     }
 
-    /// VSE parity curve authority (`CurveAuthority.hpp` table).
+    /// Curve authority factor by chassis layout (table).
     pub fn curve_authority(layout: &str) -> f32 {
         match layout {
             "Rigid4x2" => 1.0,
@@ -197,7 +195,7 @@ impl VehiclePhysics {
         }
     }
 
-    /// VSE parity directional rear steer: `ratio*delta*fade`, fade `25→40 km/h`.
+    /// Directional rear steer: `ratio*delta*fade`, fade `25→40 km/h`.
     pub fn directional(delta: f32, v_kmh: f32, ratio: f32, max_rad: f32) -> f32 {
         let fade = ((40.0 - v_kmh) / 15.0).clamp(0.0, 1.0);
         (ratio * delta * fade).clamp(-max_rad, max_rad)

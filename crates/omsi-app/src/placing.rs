@@ -20,8 +20,7 @@ pub(crate) struct Placing {
 }
 
 /// Where the ray from `o` along `d` first meets the ground (the terrain, the streets), up
-/// to `max` metres away. VSE parity (`PathTool.cpp:985-1057` via
-/// `MeshGroundEnvironment::SampleGround`): march from `t = 0.05` with step
+/// to `max` metres away: march from `t = 0.05` with step
 /// `clamp(0.75/horiz, 0.05, 2.0)` and 14 bisections. (F4 picking lives in
 /// `vse_orbit` now; this stays the vehicle-placing march.)
 pub(crate) fn ground_hit(w: &crate::scene::World, o: DVec3, d: DVec3, max: f64) -> Option<DVec3> {
@@ -36,7 +35,7 @@ pub(crate) fn ground_hit(w: &crate::scene::World, o: DVec3, d: DVec3, max: f64) 
     while t < max.min(4000.0) {
         if above(t) == Some(false) {
             // (between the last point above the ground and this one below it;
-            // VSE bisects 14 times)
+            // bisect 14 times)
             let (mut a, mut b) = (last, t);
             for _ in 0..crate::vse::VSE_PICK_BISECT {
                 let m = (a + b) * 0.5;

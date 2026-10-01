@@ -70,9 +70,8 @@ pub(crate) fn ray_may_hit(
     omsi_geometry::ray_near_sphere(o, dir.normalize_or_zero(), c, r)
 }
 
-/// How far the outside camera sits from the bus: VSE parity
-/// (`SimulationPreviewHost.cpp:1526-1527`): clamp `4..40`, FOV 60.
-/// At the start, and the nearest and farthest the wheel or +/- take it.
+/// How far the outside camera sits from the bus at the start: clamp `4..40`,
+/// FOV 60. The nearest and farthest the wheel or +/- take it.
 /// (The chase machine clamps itself; this stays for legacy readers.)
 pub(crate) const ORBIT_DEFAULT: f32 = 10.0;
 

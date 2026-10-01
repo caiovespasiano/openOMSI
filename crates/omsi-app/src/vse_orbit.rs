@@ -1,16 +1,16 @@
-//! F3/F4 cameras rebuilt 1:1 from the VSE (`D:/Programação/Engine Simulador`).
+//! F3/F4 chase and free-orbit cameras.
 //!
 //! Nothing of the previous openOMSI chase/free implementation is reused here
 //! (`camera_look` outside branch, `camera_clipped`, `SpringArm`, orbit field):
-//! every formula below is the VSE chain with the same constants, signs,
+//! every formula below defines the motion with fixed constants, signs,
 //! clamps and order. openOMSI services used as-is (never reimplemented):
 //! `Camera::ray` (ray construction), `World::ground_height` (terrain query),
 //! `ray_mesh` (mesh query), `winit` input.
 //!
-//! Conventions: VSE world frame x = right, y = forward, z = up, heading with
+//! Conventions: world frame x = right, y = forward, z = up, heading with
 //! forward = (sin, cos) — identical to the openOMSI vehicle frame, so the
 //! formulas transfer verbatim. Angles that the openOMSI `Camera` needs
-//! (yaw = atan2(dx, dy), pitch = asin(dz)) are DERIVED from the VSE
+//! (yaw = atan2(dx, dy), pitch = asin(dz)) are DERIVED from the
 //! position/target points, never converted by sign hacks.
 
 use crate::vse::{
@@ -20,8 +20,7 @@ use crate::vse::{
     VSE_PICK_BISECT, VSE_PICK_T_MAX, VSE_PICK_T_MIN,
 };
 
-/// Chase camera (VSE `ExteriorChase` state: `m_chaseYawDeg`,
-/// `m_chasePitchDeg`, `m_chaseDistance`, `m_chaseCamZFilt`).
+/// Chase camera (yaw/pitch/distance with smoothed pivot height).
 #[derive(Debug, Clone)]
 pub struct VseChase {
     pub yaw_deg: f32,
@@ -33,7 +32,7 @@ pub struct VseChase {
 }
 
 impl VseChase {
-    /// VSE `Start`: yaw 0, pitch 12, `dist = wb*1.5+4`, filter unset.
+    /// New camera: yaw 0, pitch 12, `dist = wb*1.5+4`, filter unset.
     pub fn new(wheelbase_m: f32) -> Self {
         let wb = if wheelbase_m > 1.0 { wheelbase_m } else { 6.08 };
         Self {
@@ -46,7 +45,7 @@ impl VseChase {
         }
     }
 
-    /// A new bus is a new `Start`: re-derive everything from its wheelbase.
+    /// A new bus restarts the camera: re-derive everything from its wheelbase.
     /// The driver's own zoom is never touched afterwards.
     pub fn ensure_bus(&mut self, wheelbase_m: f32) {
         let wb = if wheelbase_m > 1.0 { wheelbase_m } else { 6.08 };
@@ -55,21 +54,21 @@ impl VseChase {
         }
     }
 
-    /// VSE `SetCameraMode(ExteriorChase)`: the Z filter restarts; angles and
+    /// Entering chase: the Z filter restarts; angles and
     /// distance persist.
     pub fn enter(&mut self) {
         self.pivot_valid = false;
     }
 
-    /// VSE `ResetCameraCenter` chase part: yaw 0, pitch 12, filter restarts.
-    /// Distance is KEPT (the VSE never zeroes it).
+    /// Reset chase view: yaw 0, pitch 12, filter restarts.
+    /// Distance is KEPT (never zeroed).
     pub fn reset(&mut self) {
         self.yaw_deg = 0.0;
         self.pitch_deg = 12.0;
         self.pivot_valid = false;
     }
 
-    /// VSE `OnChaseOrbit(dx, dy)` with raw mouse pixels: `yaw -= dx*0.35`
+    /// Orbit with raw mouse pixels: `yaw -= dx*0.35`
     /// (inverted), `pitch += dy*0.35`, clamp `-10..75`.
     pub fn on_orbit_px(&mut self, dx: f32, dy: f32) {
         self.yaw_deg -= dx * VSE_CHASE_SENS;
@@ -77,23 +76,23 @@ impl VseChase {
             .clamp(VSE_CHASE_PITCH_MIN, VSE_CHASE_PITCH_MAX);
     }
 
-    /// VSE `OnZoom(delta)`: `dist -= delta*1.5`, clamp `4..40`.
+    /// Zoom: `dist -= delta*1.5`, clamp `4..40`.
     pub fn on_zoom(&mut self, delta: f32) {
         self.dist = (self.dist - delta * VSE_CHASE_ZOOM_K)
             .clamp(VSE_CHASE_DIST_MIN, VSE_CHASE_DIST_MAX);
     }
 
     /// Degree sources without pixel gain (keys, scripts, pad): applied
-    /// directly, same clamp. Not a VSE path — keeps one writer per state.
+    /// directly, same clamp. Keeps one writer per state.
     pub fn nudge_deg(&mut self, dyaw: f32, dpitch: f32) {
         self.yaw_deg += dyaw;
         self.pitch_deg = (self.pitch_deg + dpitch)
             .clamp(VSE_CHASE_PITCH_MIN, VSE_CHASE_PITCH_MAX);
     }
 
-    /// VSE `UpdateCameraPose ExteriorChase`: yaw-only basis, smoothed pivot Z
+    /// Chase pose: yaw-only basis, smoothed pivot Z
     /// (`tau 0.30`, snap while invalid), then the shared pose math below.
-    /// `pos`/`center` combine through `pivot_base` (VSE `yr/yf` basis).
+    /// `pos`/`center` combine through `pivot_base`.
     pub fn pose(
         &mut self,
         pos: [f64; 3],
@@ -113,13 +112,13 @@ impl VseChase {
         chase_points(base[0], base[1], self.pivot_z, heading_rad, self.yaw_deg, self.pitch_deg, self.dist)
     }
 
-    /// Seed values for `InitFreeCamFromChase`.
+    /// Seed values for the free camera.
     pub fn seed(&self) -> (f32, f32, f32) {
         (self.yaw_deg, self.pitch_deg, self.dist)
     }
 }
 
-/// Free orbit camera (VSE `EditorCameraController` in Play `FreeCam` mode).
+/// Free orbit camera.
 #[derive(Debug, Clone)]
 pub struct VseFreeOrbit {
     pub target: [f64; 3],
@@ -148,8 +147,8 @@ impl Default for VseFreeOrbit {
 }
 
 impl VseFreeOrbit {
-    /// VSE `Update(dt)`: glide the target (`blend = 1−exp(−10dt)`, snap below
-    /// `1e-5`), then reposition from orbit (mode is always Orbit in Play).
+    /// Glide the target (`blend = 1−exp(−10dt)`, snap below
+    /// `1e-5`), then reposition from orbit.
     pub fn update(&mut self, dt: f32) {
         if self.interpolating {
             let blend = 1.0 - (-VSE_F4_SMOOTH_K * dt.max(0.001)).exp();
@@ -167,8 +166,7 @@ impl VseFreeOrbit {
         self.reposition();
     }
 
-    /// VSE `OnOrbit(deltaPitchDeg, deltaYawDeg)` — Play calls it as
-    /// `OnOrbit(dy, dx)`: drag down raises elevation, drag right turns left.
+    /// Orbit: drag down raises elevation, drag right turns left.
     /// Damping past 70°, clamp ±88°, yaw wraps 0..360.
     pub fn on_orbit(&mut self, dy_px: f32, dx_px: f32) {
         let atten = if self.pitch_deg.abs() > 70.0 {
@@ -189,7 +187,7 @@ impl VseFreeOrbit {
     }
 
     /// Degree nudge (keys, scripts, pad — no pixel gain): same clamp and wrap
-    /// as `on_orbit`, then reposition. Not a VSE path; keeps every degree
+    /// as `on_orbit`, then reposition. Keeps every degree
     /// source alive with one writer.
     pub fn nudge(&mut self, dyaw_deg: f32, dpitch_deg: f32) {
         self.pitch_deg = (self.pitch_deg + dpitch_deg).clamp(-88.0, 88.0);
@@ -203,7 +201,7 @@ impl VseFreeOrbit {
         self.reposition();
     }
 
-    /// VSE `OnPan(dx, dy)`: exact 1:1 pixel-to-world at the target plane.
+    /// Pan: pixel-to-world at the target plane.
     pub fn on_pan(
         &mut self,
         dx_px: f32,
@@ -224,21 +222,21 @@ impl VseFreeOrbit {
         }
     }
 
-    /// VSE `OnZoom(wheelDelta)`: up (`>0`) ×0.88, else ×1.14, clamp 0.1..2000.
+    /// Zoom: up (`>0`) ×0.88, else ×1.14, clamp 0.1..2000.
     pub fn on_zoom(&mut self, wheel: f32) {
         let factor = if wheel > 0.0 { 0.88 } else { 1.14 };
         self.dist = (self.dist * factor).clamp(0.1, 2000.0);
         self.reposition();
     }
 
-    /// VSE `OnPrecisionDolly(dy)`: up closes in, down recedes.
+    /// Precision dolly: up closes in, down recedes.
     pub fn on_dolly(&mut self, dy_px: f32) {
         let factor = (1.0 - dy_px * 0.0028).clamp(0.80, 1.20);
         self.dist = (self.dist * factor).clamp(0.05, 2500.0);
         self.reposition();
     }
 
-    /// VSE `SetOrbitTarget`: hard target + resync dist/yaw/pitch from the
+    /// Set target: hard target + resync dist/yaw/pitch from the
     /// kept position (first MMB drag orbits the NEW target, never snaps back).
     pub fn set_target(&mut self, x: f64, y: f64, z: f64) {
         self.target = [x, y, z];
@@ -262,13 +260,13 @@ impl VseFreeOrbit {
         }
     }
 
-    /// VSE `SetOrbitTargetSmooth`: desired only; `update` glides there.
+    /// Set target smooth: desired only; `update` glides there.
     pub fn set_target_smooth(&mut self, x: f64, y: f64, z: f64) {
         self.desired = [x, y, z];
         self.interpolating = true;
     }
 
-    /// VSE `SetLookAtDirect`: pose as given, target settled.
+    /// Set look-at: pose as given, target settled.
     pub fn set_look_at(&mut self, pos: [f64; 3], tgt: [f64; 3]) {
         self.position = pos;
         self.target = tgt;
@@ -276,7 +274,7 @@ impl VseFreeOrbit {
         self.interpolating = false;
     }
 
-    /// VSE `InitFreeCamFromChase`: same pose math as the chase (yaw-only
+    /// Seed from chase: same pose math as the chase (yaw-only
     /// basis, chase yaw/pitch/dist, smoothed pivot Z), then detach — after
     /// this the vehicle is never read again. Orbit internals resynced from
     /// the pose so the first drag orbits the new target. `base` is the
@@ -299,7 +297,7 @@ impl VseFreeOrbit {
         self.set_target(tgt[0], tgt[1], tgt[2]);
     }
 
-    /// VSE `UpdateCameraPositionFromOrbit`: spherical around target (Z-up,
+    /// Spherical around target (Z-up,
     /// pitch = elevation, yaw 0 = facing +Y from −Y).
     fn reposition(&mut self) {
         let pr = (self.pitch_deg.to_radians()) as f64;
@@ -313,7 +311,7 @@ impl VseFreeOrbit {
     }
 
     /// View direction target→camera inverted (camera→target), as openOMSI
-    /// yaw (`atan2(x, y)`) / pitch (`asin(z)`) — derived from the VSE points,
+    /// yaw (`atan2(x, y)`) / pitch (`asin(z)`) — derived from the points,
     /// never sign-hacked.
     pub fn view_angles(&self) -> (f32, f32) {
         let dx = self.target[0] - self.position[0];
@@ -326,8 +324,8 @@ impl VseFreeOrbit {
         )
     }
 
-    /// Right/up basis around the view direction (VSE `GetRightVector` /
-    /// `GetUpVector`, ±Y fallback at the poles) for `on_pan`.
+    /// Right/up basis around the view direction (±Y fallback at the poles)
+    /// for `on_pan`.
     pub fn basis(&self) -> ([f64; 3], [f64; 3]) {
         let dx = self.target[0] - self.position[0];
         let dy = self.target[1] - self.position[1];
@@ -357,9 +355,9 @@ impl VseFreeOrbit {
     }
 }
 
-/// VSE terrain march (`PathTool::ScreenPointToTerrain`): from `t = 0.05`,
+/// Terrain march: from `t = 0.05`,
 /// step `clamp(0.75/horiz, 0.05, 2.0)` to `4000`, then 14 bisections.
-/// `ground(x, y)` is the terrain service (`SampleGround` over there).
+/// `ground(x, y)` is the terrain service.
 pub fn vse_pick_ground(
     o: [f64; 3],
     d: [f64; 3],

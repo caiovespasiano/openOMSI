@@ -48,8 +48,8 @@ pub struct KeyboardAxes {
     pub speed_kmh: f32,
     /// Rate of the steering wheel (fraction per second) while it swings back on its own.
     pub steer_vel: f32,
-    /// VSE parity (`SimulationPreviewHost.cpp:1889-1891`): keyboard sensitivity
-    /// slider, default `0.70`, clamp `0.20..2.00`. Scales both turn and return.
+    /// Keyboard sensitivity slider: default `0.70`, clamp `0.20..2.00`.
+    /// Scales both turn and return.
     pub steering_sens: f32,
     /// "Steering linearity": the keys turn the wheel as Omsi.exe does (0x7e64c6): the
     /// curvature changes by 0.00005 per millisecond whatever the speed, so the wheel goes at
@@ -59,14 +59,14 @@ pub struct KeyboardAxes {
     /// "Old Steering": let go, the wheel stays where it is and is turned back by hand - OMSI
     /// without `[autoCenter]`.
     pub old_steering: bool,
-    /// VSE parity: while the mouse owns the wheel (`O` drive), the keyboard
-    /// contributes nothing to steering or pedals (VSE `!mouseDrive` guards).
+    /// While the mouse owns the wheel (`O` drive), the keyboard
+    /// contributes nothing to steering or pedals.
     /// Key states are kept, so releasing `O` resumes seamlessly.
     pub mouse_owned: bool,
-    /// Handed back from the mouse: stays until steered by hand (reference
-    /// `hold_steer`; any steering key or centering clears it).
+    /// Handed back from the mouse: stays until steered by hand
+    /// (`hold_steer`; any steering key or centering clears it).
     pub hold_steer: bool,
-    /// Pedal plant state below (VSE `PedalInputController` edges/timers).
+    /// Pedal plant state below (press/release edges and hold timers).
     pub prev_thr_held: bool,
     pub thr_since_release_s: f32,
     pub thr_fast_rise: bool,
@@ -75,9 +75,9 @@ pub struct KeyboardAxes {
     pub brk_hold_mode: bool,
     pub brk_raw_at_press: f32,
     pub prev_clu_held: bool,
-    /// The gearbox has a real clutch pedal (VSE: only `manual`; default true
-    /// here because no drivetrain type reaches the input layer — without it
-    /// the TAB clutch would die for every bus).
+    /// The gearbox has a real clutch pedal (only for manual gearboxes;
+    /// default true here because no drivetrain type reaches the input layer
+    /// — without it the TAB clutch would die for every bus).
     pub clutch_has_pedal: bool,
     pub lock_curvature: f32,
     /// OMSI's held brake (the default): let go, the brake stays where the key left it until
@@ -162,11 +162,10 @@ impl KeyboardAxes {
         };
     }
 
-    /// VSE parity keyboard step (`SimulationPreviewHost.cpp:1886-1986`):
-    /// `input ±= rate*dt` with speed turn/unwind, low-speed agility and Hermite
-    /// unwind pitch. Returns `(steer_rate, unsteer_rate, pitch_mult)`.
-    /// `v_kmh` absolute road speed, `dt` seconds, integrated in fixed
-    /// `0.01 s` substeps like the reference.
+    /// Keyboard step: `input ±= rate*dt` with speed turn/unwind, low-speed
+    /// agility and Hermite unwind pitch. Returns `(steer_rate, unsteer_rate,
+    /// pitch_mult)`. `v_kmh` absolute road speed, `dt` seconds, integrated
+    /// in fixed `0.01 s` substeps.
     pub fn vse_keyboard_step(&mut self, dt: f32, v_kmh: f32) -> (f32, f32, f32) {
         let sens = if self.steering_sens > 0.0 { self.steering_sens } else { 0.70 };
         let (steer, unsteer, pitch) = vse_keyboard_rates_inner(v_kmh, self.steering.abs(), sens);
@@ -192,9 +191,8 @@ impl KeyboardAxes {
         (steer, unsteer, pitch)
     }
 
-    /// VSE parity return-to-centre (`SimulationPreviewHost.cpp:2049-2115`):
-    /// only while rolling (`v_kmh > 0`), with angular ease-out, in fixed
-    /// `0.01 s` substeps like the reference. No-op while a steering key is
+    /// Return-to-centre: only while rolling (`v_kmh > 0`), with angular
+    /// ease-out, in fixed `0.01 s` substeps. No-op while a steering key is
     /// held. Returns the applied step (signed).
     pub fn vse_return_to_centre(&mut self, dt: f32, v_kmh: f32, half_deg: f32, pitch_mult: f32) -> f32 {
         if self.left_key || self.right_key || self.steering.abs() <= 0.0001 || dt <= 0.0 {
@@ -210,20 +208,19 @@ impl KeyboardAxes {
     }
 
     pub fn update(&mut self, dt: f32) {
-        // VSE parity: while the mouse owns the wheel the keyboard is ignored
-        // entirely (`!mouseDrive`); the stored key states are kept for resume.
+        // While the mouse owns the wheel the keyboard is ignored
+        // entirely; the stored key states are kept for resume.
         let (throttle_key, brake_key, left_key, right_key) = if self.mouse_owned {
             (false, false, false, false)
         } else {
             (self.throttle_key, self.brake_key, self.left_key, self.right_key)
         };
-        // VSE pedal plant (`PedalInputController::Update`): keyboard held /
-        // analog bypass feed temporal ramps, never direct positions.
-        // `dt` clamped like the reference (no hitch jumps).
+        // Pedal plant: keyboard held / analog bypass feed temporal ramps,
+        // never direct positions. `dt` clamped (no hitch jumps).
         let dt = dt.clamp(0.0, 0.05);
         let v_kmh = self.speed_kmh.abs();
         // --- throttle (tip-in, double-tap kickdown, rise/fall) ---
-        // `amplify` (OMSI key) lifts the cap to 1.0; the curve stays VSE.
+        // `amplify` (OMSI key) lifts the cap to 1.0; the curve is unchanged.
         let thr_cap = if self.amplify_key { 1.0 } else { 0.80 };
         if throttle_key {
             self.brake = 0.0;
@@ -289,9 +286,10 @@ impl KeyboardAxes {
             self.brake = (self.brake - 3.0 * dt).max(0.0);
         }
         // --- clutch (TAB, bite floor, slow rise / fast fall) ---
-        // Authority note: VSE gates on the drivetrain type; no gearbox type
-        // reaches this layer here, so `clutch_has_pedal` (default true)
-        // preserves the working clutch instead of killing it for every bus.
+        // Authority note: the drivetrain type decides this upstream; no
+        // gearbox type reaches this layer here, so `clutch_has_pedal`
+        // (default true) preserves the working clutch instead of killing it
+        // for every bus.
         if !self.clutch_has_pedal {
             self.clutch = 0.0;
             self.prev_clu_held = false;
@@ -305,11 +303,12 @@ impl KeyboardAxes {
             self.clutch = (self.clutch - dt / 0.18).max(0.0);
             self.prev_clu_held = false;
         }
-        // Steering (VSE parity, single writer): A/D integrate with the VSE
-        // rates (base/exp/low/Hermite) and return only while rolling. The
+        // Steering (single writer): A/D integrate with the rates
+        // (base/exp/low/Hermite) and return only while rolling. The
         // `linear` / `centering` / `old_steering` opt-ins keep their OMSI
-        // paths; the default path is the VSE, so no second integrator fights it.
-        // While the mouse owns the wheel none of this runs (VSE `!mouseDrive`).
+        // paths; the default path is the rate/return integrator below, so no
+        // second integrator fights it.
+        // While the mouse owns the wheel none of this runs.
         let v = self.speed_kmh.abs();
         let sens = if self.steering_sens > 0.0 { self.steering_sens } else { 0.70 };
         if !self.mouse_owned {
@@ -350,8 +349,7 @@ impl KeyboardAxes {
         if self.neutral_key {
             self.centering = true;
         }
-        // Fixed 0.01 s substeps, up to 5 a frame (reference `heavy_turn` /
-        // `heavy_return`, VSE `kFixedDt` accumulator): frame-rate independent.
+        // Fixed 0.01 s substeps, up to 5 a frame: frame-rate independent.
         let n = ((dt / 0.01).round() as usize).clamp(1, 5);
         let h = dt / n as f32;
         // (inside the outer `!mouse_owned` guard: no integration, no return,
@@ -362,7 +360,7 @@ impl KeyboardAxes {
         if left_key && !right_key {
             self.hold_steer = false;
             for _ in 0..n {
-                // VSE rates for this speed and wheel position (the unwind
+                // Rates for this speed and wheel position (the unwind
                 // pitch is also the return's angle factor input).
                 let (steer_rate_v, unsteer_rate_v, _) =
                     vse_keyboard_rates_inner(v, self.steering.abs(), sens);
@@ -396,12 +394,12 @@ impl KeyboardAxes {
             self.steer_vel = 0.0;
         } else if self.hold_steer {
             // handed back from the mouse: stays until steered by hand
-            // (reference `hold_steer`; any steering key above clears it).
+            // (`hold_steer`; any steering key above clears it).
             self.steer_vel = 0.0;
         } else {
-            // VSE return-to-centre: only while rolling; standing still the
+            // Return-to-centre: only while rolling; standing still the
             // wheel rests where the hands left it. Pitch recomputed every
-            // substep like the reference (it falls with the wheel).
+            // substep (it falls with the wheel).
             for _ in 0..n {
                 let (_, _, pitch) =
                     vse_keyboard_rates_inner(v, self.steering.abs(), sens);
@@ -413,14 +411,14 @@ impl KeyboardAxes {
     }
 }
 
-/// VSE parity math (mirrors `omsi-app::vse`; duplicated here so `omsi-sim`
+/// Shared steering math (mirrors `omsi-app::vse`; duplicated here so `omsi-sim`
 /// stays platform-independent and desktop/mobile-free).
 fn vse_smooth01(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
-/// VSE `NextBrakeStep`: first latch step above `current` (+2% epsilon).
+/// Brake detent steps: first latch step above `current` (+2% epsilon).
 fn next_brake_step(current: f32) -> f32 {
     const STEPS: [f32; 5] = [0.10, 0.25, 0.50, 0.80, 1.00];
     for s in STEPS {
@@ -523,9 +521,8 @@ mod tests {
         assert!((a.steering - 0.25).abs() < 0.02, "it comes back at the same pace: {}", a.steering);
     }
 
-    /// VSE pedal plant: tip-in, double-tap kickdown, rise/fall ramps, tap
-    /// steps with latch, hold tangent by speed, W-cancel. Numbers derived
-    /// from `PedalInputController`, not tuned to pass.
+    /// Pedal plant: tip-in, double-tap kickdown, rise/fall ramps, tap
+    /// steps with latch, hold tangent by speed, W-cancel.
     #[test]
     fn pedals_as_vse_ramps_them() {
         // throttle tip-in on the press edge, then 0.80 cap in 0.8 s.
@@ -619,8 +616,8 @@ mod tests {
         assert!(a.steering > 0.5, "old steering stays: {}", a.steering);
     }
 
-    /// VSE clutch (TAB, manual only): press edge plants the 0.20 bite floor,
-    /// holds climbs 0→100% in 0.45 s, release falls in 0.18 s.
+    /// Clutch (TAB, manual only): press edge plants the 0.20 bite floor,
+    /// hold climbs 0→100% in 0.45 s, release falls in 0.18 s.
     #[test]
     fn the_clutch_bites_then_climbs_and_lets_go_fast() {
         let mut a = KeyboardAxes::default();
@@ -645,11 +642,11 @@ mod tests {
         assert_eq!(b.clutch, 0.0);
     }
 
-    /// VSE parity (`SimulationPreviewHost.cpp:1886-1986,2049-2115`): a key
-    /// turns the wheel at the VSE rate (slower with speed, agile at crawl),
-    /// unwinding against the turn uses the Hermite pitch, and let go the
-    /// wheel only comes back while rolling — standing still it rests where
-    /// the hands left it, settling without swinging through the middle.
+    /// Keyboard steering: a key turns the wheel at the speed-sensitive rate
+    /// (slower with speed, agile at crawl), unwinding against the turn uses
+    /// the Hermite pitch, and let go the wheel only comes back while
+    /// rolling — standing still it rests where the hands left it, settling
+    /// without swinging through the middle.
     #[test]
     fn steering_returns_like_a_spring() {
         let step = 1.0 / 60.0;
@@ -697,7 +694,7 @@ mod tests {
             fast.steering,
             k.steering
         );
-        // let go at 30 km/h: eases back at the VSE return rate, never through
+        // let go at 30 km/h: eases back at the return rate, never through
         // the middle, and settles (angle factor + auto pitch slow it down)
         k.set(EngineAction::SteeringLeft, false);
         for _ in 0..60 {
@@ -728,7 +725,7 @@ mod tests {
             "never settled rolling: {}",
             k.steering
         );
-        // standing still it stays where the hands left it (VSE: return is 0
+        // standing still it stays where the hands left it (return is 0
         // at 0 km/h — the wheel rests, it is not stuck)
         let mut s = KeyboardAxes {
             steering: -0.8,
@@ -759,7 +756,7 @@ mod tests {
         assert_eq!(m.throttle, 0.0);
     }
 
-    /// Handoff freeze (reference `hold_steer`): handed back from the mouse,
+    /// Handoff freeze (`hold_steer`): handed back from the mouse,
     /// the wheel stays put rolling until a steering key (or centering) moves
     /// it — never an automatic return, never a reset.
     #[test]
@@ -782,9 +779,9 @@ mod tests {
         assert!(!h.hold_steer);
     }
 
-    /// VSE parity drive keys: `W` is throttle only, `S` brake only, `A`/`D`
-    /// steering only — no channel ever writes another (`frame → writers`:
-    /// normal keyboard = 1 writer, the key's own integrator branch).
+    /// Drive keys: `W` is throttle only, `S` brake only, `A`/`D`
+    /// steering only — no channel ever writes another (normal keyboard
+    /// = 1 writer, the key's own integrator branch).
     #[test]
     fn vse_drive_keys_isolated() {
         let step = 0.01;
@@ -805,7 +802,7 @@ mod tests {
         d.update(step);
         assert!(d.steering > 0.0 && d.throttle == 0.0 && d.brake == 0.0);
         // release: nothing sticks from another channel (residue below the
-        // VSE `1e-4` guard is the wheel at rest, not a stuck input).
+        // `1e-4` guard is the wheel at rest, not a stuck input).
         d.set(EngineAction::SteeringRight, false);
         d.speed_kmh = 30.0;
         for _ in 0..1000 {

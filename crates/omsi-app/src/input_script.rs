@@ -217,7 +217,7 @@ impl App {
                     && !own
                     && (fallback_action(code, &self.args.drive_keys).is_some()
                     || matches!(code, KeyCode::KeyZ | KeyCode::KeyX | KeyCode::KeyC | KeyCode::KeyI | KeyCode::KeyL));
-                // VSE parity: the arrows never drive (they are F1/F2 camera
+                // The arrows never drive (they are F1/F2 camera
                 // previous/next, or orbit/glance per frame); only Ctrl+Left/Right
                 // switch the interior camera, below.
                 let plain_arrow = matches!(code, KeyCode::ArrowLeft | KeyCode::ArrowRight) && !ctrl;
@@ -240,7 +240,7 @@ impl App {
                         return;
                     }
                     // the interior cameras: Ctrl+Left/Right (plain arrows are cameras
-                    // too, below — VSE parity, arrows never drive)
+                    // too, below — arrows never drive)
                     // a manual gearbox: Ctrl+Up / Ctrl+Down shift up and down - the stock key file
                     // has no keys for it, and a bus like the LiAZ MKPP stayed in its gear
                     KeyCode::ArrowUp | KeyCode::ArrowDown if ctrl && !alt => {
@@ -258,10 +258,9 @@ impl App {
                         self.game_action("view_interiorcam_plus");
                         return;
                     }
-                    // VSE parity (`SimulationPreviewHost.cpp:2162-2207`): plain
-                    // arrows are F1/F2 camera previous/next (circular wrap inside
-                    // `game_action`), never steering. Plain Up/Down in F1/F2 do
-                    // nothing (VSE: no tilt); Up/Down in F3 orbit per frame.
+                    // Plain arrows are F1/F2 camera previous/next (circular wrap
+                    // inside `game_action`), never steering. Plain Up/Down in
+                    // F1/F2 do nothing (no tilt); Up/Down in F3 orbit per frame.
                     KeyCode::ArrowLeft if !ctrl && !alt && !shift_now
                         && matches!(self.view.as_str(), "driver" | "pax") =>
                     {
@@ -277,9 +276,9 @@ impl App {
                     KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight if !ctrl && !alt && !shift_now && matches!(self.view.as_str(), "driver" | "pax" | "outside") => {
                         return;
                     }
-                    // VSE parity (`PollDriverGearInput` edge): LShift = GearUp,
-                    // LCtrl = GearDown on automatic/automated boxes
-                    // (`GearDown <- N -> GearUp` stepping lives in `shift_gear`).
+                    // LShift = GearUp, LCtrl = GearDown on automatic/automated
+                    // boxes (`GearDown <- N -> GearUp` stepping lives in
+                    // `shift_gear`).
                     // Manual boxes ignore these (their gate is N/R/1-7 via the bus).
                     // Only consumed when the gear actually shifts; otherwise the
                     // press falls through (Shift/Ctrl stay modifiers for chords).
@@ -513,7 +512,7 @@ impl App {
                     _ => {}
                 }
             }
-            // the arrow keys never drive (VSE parity); with a wheel the preset
+            // the arrow keys never drive; with a wheel the preset
             // still only decides about WASD (a key the player bound to something
             // else is theirs, not the preset's)
             let own = keys::dik_code(code).is_some_and(|s| self.own_keys.contains(&s));
@@ -687,7 +686,7 @@ impl App {
     }
 
     /// Zoom the view inside the bus by `notches` of the mouse wheel (in: positive).
-    /// VSE parity (`OnInteriorZoomDrag`, `InteriorDisplayFov`): full zoom is
+    /// Interior zoom: full zoom is
     /// `6.5x` (`base/(1+5.5*z)`), so the multiplier reaches `~0.154`.
     /// Past the authored FOV ("negative zoom") only with the menu option on.
     pub(crate) fn zoom_by(&mut self, notches: f32) {
@@ -699,7 +698,7 @@ impl App {
 
     pub(crate) fn look_by(&mut self, dx: f32, dy: f32) {
         self.sync_view_look();
-        // a hand on the view cancels an eased Space return (VSE: a new input
+        // a hand on the view cancels an eased Space return (a new input
         // starts a new ease; here the user simply takes over).
         self.vse_zoom_return = None;
         if self.view == "foot" {
@@ -707,7 +706,7 @@ impl App {
             return;
         }
         if self.view == "free" || self.player.is_none() {
-            // F4 VSE-orbit mode turns the machine (degrees, no pixel gain);
+            // F4 orbit mode turns the machine (degrees, no pixel gain);
             // fly / player-less map keep turning the camera in place.
             if self.view == "free" && !self.free_fly && !self.ego && self.player.is_some() {
                 self.vse_free.nudge(dx, -dy);
@@ -718,14 +717,14 @@ impl App {
         } else if self.view == "outside" {
             // F3 rebuilt: degree sources (scripts, keys, pad) nudge the chase
             // machine directly (same clamp, no pixel gain). Mouse drags feed
-            // raw pixels in the motion handler (VSE `OnChaseOrbit` gain).
+            // raw pixels in the motion handler.
             // `look` is no longer rendered for outside; kept untouched.
             self.vse_chase.nudge_deg(dx, dy);
         } else if self.view == "driver" {
-            // F1 head (VSE `OnInteriorOrbit`): yaw `±90`; the downward stop
-            // is the VSE `-35°` minus the zoom margin (`vse_pitch_min_for_zoom`,
+            // F1 head: yaw `±90`; the downward stop
+            // is `-35°` minus the zoom margin (`vse_pitch_min_for_zoom`,
             // zero at rest — a zoomed window travels inside the normal frame).
-            // F2 keeps the fixed VSE `-35°` (frozen behavior, see below).
+            // F2 keeps the fixed `-35°` (frozen behavior, see below).
             let base = self
                 .player
                 .as_ref()
@@ -748,7 +747,7 @@ impl App {
                 crate::vse::VSE_LOOK_PITCH_MAX,
             );
         } else {
-            // F2 head, frozen (VSE `OnInteriorOrbit` stops `±90` / `-35..+35`):
+            // F2 head, frozen (stops `±90` / `-35..+35`):
             // byte-identical to the validated behavior; the zoom-aware stop
             // above is F1 only.
             self.look.0 = (self.look.0 + dx).clamp(
@@ -1042,7 +1041,7 @@ impl App {
         if self.view == "foot" && !self.foot_reaches_bus() {
             return;
         }
-        // F4 retarget, VSE-orbit mode only (fly mode falls through to the
+        // F4 retarget, orbit mode only (fly mode falls through to the
         // cockpit/html logic below): LMB marches terrain (`ScreenPointTo-
         // Terrain`, 14 bisections) with `Z=0` fallback; Alt tries the bus mesh
         // first, then terrain, then `Z=0`. Hit becomes the orbit target via
@@ -2280,18 +2279,18 @@ impl App {
             "view_set_passenger" => self.view = "pax".into(),
             "view_set_outside" => self.view = "outside".into(),
             "view_set_map" => {
-                // F4 first press = VSE free camera (`InitFreeCamFromChase`):
+                // F4 first press = free camera:
                 // respawn from the current F3 chase pose, then detach — the
                 // vehicle may drive away while the camera stays in the world.
                 // LMB retargets via `vse_orbit` march + `Z=0` fallback;
                 // Alt+MMB adds the mesh/sphere path (see `vse.rs`).
                 // F4 second press (already free) = openOMSI fly camera
                 // (`free_fly`): same pose, plus WASD/QE translation. The two
-                // states never mix; F3 re-entry always restarts at VSE mode.
+                // states never mix; F3 re-entry always restarts at orbit mode.
                 let (snap, fly) = crate::vse::vse_free_press(self.view == "free", self.free_fly);
                 self.free_fly = fly;
                 if snap {
-                    // VSE `InitFreeCamFromChase`: same pose math as the chase
+                    // Same pose math as the chase
                     // (machine state, smoothed pivot), then detach — later
                     // frames never read the vehicle again.
                     if let Some(p) = self.player.as_ref() {
@@ -2325,7 +2324,7 @@ impl App {
                     }
                     self.service_msg = Some(("Free camera: orbit/zoom/pick (F4 again for fly mode)".into(), 4.0));
                 } else {
-                    // back to VSE-orbit mode: re-anchor the machine on the
+                    // back to orbit mode: re-anchor the machine on the
                     // current pose so nothing jumps (position kept, orbit
                     // angles resynced from it).
                     if !fly {
@@ -2388,8 +2387,7 @@ impl App {
                 if let Some(vr) = self.vr.as_mut() { vr.recenter(); }
             }
             // (Space in Inputs/keyboard.cfg: every view looks ahead again, and back to the
-            // standard camera - "center". F1 eases back like the VSE
-            // (`ResetCameraCenter` → `Begin/AdvanceDriverEaseTo`, same 0.54s
+            // standard camera - "center". F1 eases back (same 0.54s
             // ease-out, zoom included) while "Drive Head Smooth Movement" is
             // ON; OFF cuts instantly. Every other view resets at once, and
             // F2 stays exactly as validated.)
@@ -2414,7 +2412,7 @@ impl App {
                         self.view_zoom.remove(&self.view);
                     }
                 } else {
-                    // F3 Space = VSE `ResetCameraCenter` chase part (angles
+                    // F3 Space = chase reset (angles
                     // home, distance kept); other views reset at once, F2
                     // exactly as validated.
                     if self.view == "outside" {
@@ -2451,7 +2449,7 @@ impl App {
                 self.mouse_drive = !self.mouse_drive;
                 if self.mouse_drive {
                     // taking over: held keys must not stick the pedals or the
-                    // wheel (reference handoff) — key states go, the fade
+                    // wheel — key states go, the fade
                     // below still eases from the wheel's place, no teleport.
                     if let Some(p) = self.player.as_mut() {
                         p.axes.release_all();
@@ -2464,7 +2462,7 @@ impl App {
                 } else if let Some(p) = self.player.as_mut() {
                     // handing back: the keys and the return carry on from where
                     // the mouse left the wheel and the pedals, and the wheel
-                    // stays there until steered by hand (reference `hold_steer`;
+                    // stays there until steered by hand (`hold_steer`;
                     // never a reset, never a jump).
                     p.axes.release_all();
                     p.axes.throttle = self.mouse_pedals.0;
@@ -2478,13 +2476,13 @@ impl App {
                     self.mouse_past = 0.0;
                 }
                 // starts neutral until the mouse moves from where it was
-                // (reference `mouse_anchor`).
+                // (`mouse_anchor`).
                 self.mouse_anchor = if self.mouse_drive { Some(self.cursor) } else { None };
                 #[cfg(windows)]
                 if !self.mouse_drive {
                     self.reset_vr_pointer();
                 }
-                // VSE capture, stricter: while O is on the cursor is confined
+                // While O is on the cursor is confined
                 // to the physical window so it can never report imaginary
                 // coordinates past the border (DPI included).
                 self.cursor_confined = self.confine_cursor(self.mouse_drive);
@@ -2549,10 +2547,10 @@ impl App {
         true
     }
 
-    /// VSE parity: gearbox authority follows the transmission type
-    /// (`Drivetrain::DriverHasGearAuthority` — manual always, automated only
-    /// with override, automatic/dct never). Same probe as the phone's gearbox
-    /// (`touch.rs`): a script that reads the clutch pedal is a manual one.
+    /// Gearbox authority follows the transmission type (manual always,
+    /// automated only with override, automatic/dct never). Same probe as the
+    /// phone's gearbox (`touch.rs`): a script that reads the clutch pedal is
+    /// a manual one.
     /// `N/R/1-7` reach the bus through `p.key` either way; the bus's own
     /// triggers filter them (a manual ignores `automatic_*`, an automatic
     /// ignores `kw_s_*`), so no global `match key -> gear` exists.

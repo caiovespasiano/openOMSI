@@ -112,15 +112,14 @@ pub(crate) struct Player {
 /// `Inputs/keyboard.cfg` gives W the wipers, S the viewpoint and **D the D of the automatic
 /// gearbox**, so those three are reached by holding shift (Shift+D selects D), and the bus
 /// can still be put into gear. `--drive-keys arrows` leaves W/A/S/D to OMSI entirely.
-/// VSE parity: the arrow keys NEVER drive (VSE `EditorViewportHost.cpp:3520-3523` +
-/// `SimulationPreviewHost.cpp:2162-2207` — arrows are F1/F2 camera previous/next).
+/// The arrow keys NEVER drive — arrows are F1/F2 camera previous/next.
 /// Hence no arrow mapping here in any preset; camera switching lives in `on_key`
 /// (`view_interiorcam_∓`) and the per-frame glance/orbit.
 /// The driving keys of a control preset (`drive_keys` in the settings):
 /// `omsi` - only the original layout of Inputs/keyboard.cfg (Shift + numpad), nothing extra;
 /// `simple` - W/S/A/D drive (arrows are cameras); `wasd` - W/S/A/D only;
 /// `arrows` - kept for compat (W/S/D keep their OMSI meaning: wipers, viewpoint, gear),
-/// but arrows still do not drive either (VSE: arrows are cameras, not steering).
+/// but arrows still do not drive either (arrows are cameras, not steering).
 pub(crate) fn fallback_action(code: KeyCode, preset: &str) -> Option<omsi_sim::EngineAction> {
     use omsi_sim::EngineAction as A;
     let preset = preset.to_ascii_lowercase();
@@ -1124,9 +1123,9 @@ impl Player {
             self.axes.brake = 0.0;
         }
         self.auto_clutch_bite(a.throttle.unwrap_or(0.0).max(self.axes.throttle));
-        // VSE parity: while the mouse owns the wheel its analogs are the only
-        // truth — the keyboard must not add on top via `max` (VSE `!mouseDrive`
-        // zeroes keyboard authority; `O + W`/`O + S` otherwise double-drive).
+        // While the mouse owns the wheel its analogs are the only
+        // truth — the keyboard must not add on top via `max`
+        // (keyboard authority is zero; `O + W`/`O + S` otherwise double-drive).
         let owned = self.axes.mouse_owned;
         self.vehicle.set_controls(omsi_sim::Controls {
             throttle: if owned {
@@ -1719,11 +1718,11 @@ impl Player {
                 }
             }
             None => {
-                // Outside (F3/offscreen): VSE chase pose from the shared core
+                // Outside (F3/offscreen): chase pose from the shared core
                 // (`chase_points`), stateless here (first frame = filter
                 // snap). `look.0` seeds chase yaw, `12 + look.1` the pitch,
                 // `dist` the distance. Live frames use `VseChase` instead.
-                // Angles derive from the VSE points (never sign-hacked).
+                // Angles derive from the chase points (never sign-hacked).
                 let (cpos, ctgt) = crate::vse_orbit::chase_points(
                     self.vehicle.position.x,
                     self.vehicle.position.y,
@@ -2001,7 +2000,7 @@ pub(crate) fn keep_wheel(p: Option<&mut Player>) {
 }
 
 /// OMSI's mouse steering (Omsi.exe 0x6f4284..0x6f447b): kept for the unit test
-/// and as the documented OMSI reference; the drive-mode path now uses the VSE
+/// and as the documented OMSI behavior; the drive-mode path now uses the
 /// target (`vse_mouse_steering`). Positive = right.
 #[allow(dead_code)]
 pub(crate) fn mouse_steering(cursor_x: f32, width: f32, kmh: f32) -> f32 {
@@ -2009,14 +2008,14 @@ pub(crate) fn mouse_steering(cursor_x: f32, width: f32, kmh: f32) -> f32 {
     x / (kmh / 10.0).max(1.0)
 }
 
-/// VSE parity mouse target (`CockpitDrag::MouseSteerTarget` + `MouseDriveIntent`):
-/// edge `0.75*|nx|`, corner ramps, no speed division here (speed lives in the
-/// keyboard rates / return-to-centre downstream). `nx` right+, `-1..1`.
+/// Mouse target: edge `0.75*|nx|`, corner ramps, no speed division here
+/// (speed lives in the keyboard rates / return-to-centre downstream).
+/// `nx` right+, `-1..1`.
 pub(crate) fn vse_mouse_steering(nx: f32, ny: f32) -> f32 {
     crate::vse::vse_mouse_target(nx, ny)
 }
 
-/// VSE parity pedals (`MouseDriveIntent`): deadzone `0.10`, throttle full top,
+/// Mouse pedals: deadzone `0.10`, throttle full top,
 /// brake full at 70% down. `ny` up+, `-1..1`.
 pub(crate) fn vse_mouse_pedals(ny: f32) -> (f32, f32) {
     crate::vse::vse_mouse_pedals(ny)
@@ -2037,7 +2036,7 @@ mod input_routing_tests {
     use omsi_sim::EngineAction as A;
     use winit::keyboard::KeyCode as K;
 
-    /// VSE parity behavioral matrix: W/S/A/D drive (throttle/brake/left/right)
+    /// Drive-key matrix: W/S/A/D drive (throttle/brake/left/right)
     /// in the `simple`/`wasd` presets and unknown presets; never in
     /// `omsi`/`arrows` (documented opt-out, D7).
     #[test]
@@ -2055,7 +2054,7 @@ mod input_routing_tests {
         }
     }
 
-    /// The core parity claim: NO arrow reaches steering/throttle/brake in ANY
+    /// Core drive-key rule: NO arrow reaches steering/throttle/brake in ANY
     /// preset. `ArrowLeft` cannot become `SteeringLeft` on any route through
     /// `fallback_action` (the only producer of driving `EngineAction`s from
     /// physical keys besides `keyboard.cfg`, whose arrow rows are guarded by

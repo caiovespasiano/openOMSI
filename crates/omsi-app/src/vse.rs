@@ -1,24 +1,22 @@
-//! VSE parity: camera (F1-F4), mouse-drive steering, keyboard steering,
-//! return-to-centre, FFB and Ackermann helpers ported from
-//! `D:/Programação/Engine Simulador` (C++17).
+//! Camera (F1-F4), mouse-drive steering, keyboard steering,
+//! return-to-centre, FFB and Ackermann helpers.
 //!
-//! Source chains (see `docs/VSE_TO_OPENOMSI_CAMERA_STEERING_PORT.md`):
-//! - `SimulationPreviewHost.cpp:1363-1433` ease `0.54s`, `s = 1-(1-t)^3`
-//! - `SimulationPreviewHost.cpp:1531-1556` interior orbit/zoom
-//! - `SimulationPreviewHost.cpp:1435-1441` `FOV = base/(1+5.5*z)`, min 4
-//! - `SimulationPreviewHost.cpp:2398-2443` F3 chase `offZ 1.6 / tgt 1.4 / tauZ 0.30`
-//! - `EditorCameraController.cpp:39-55,296-302` F4 `blend = 1-exp(-10*dt)`
-//! - `PathTool.cpp:985-1057` terrain march + 14 bisections, fallback `Z=0`
-//! - `CockpitDrag.hpp:102-112` + `SimulationPreviewHost.cpp:1129-1137,1996-2036`
-//!   mouse `edge/corner/slew tau 0.12`
-//! - `SimulationPreviewHost.cpp:1886-2115` keyboard rates + return-in-motion
-//! - `ControlSystems.cpp:90-99` FFB `-0.025*delta*v^2`, clamp `±15`
-//! - `ChassisMotion.cpp:900-946` Ackermann `r_in = L/tan(inner)`
+//! What this module implements (see `docs/VSE_TO_OPENOMSI_CAMERA_STEERING_PORT.md`):
+//! - head glide `0.54s`, `s = 1-(1-t)^3`
+//! - interior orbit/zoom
+//! - `FOV = base/(1+5.5*z)`, min 4
+//! - F3 chase `offZ 1.6 / tgt 1.4 / tauZ 0.30`
+//! - F4 `blend = 1-exp(-10*dt)`
+//! - terrain march + 14 bisections, fallback `Z=0`
+//! - mouse `edge/corner/slew tau 0.12`
+//! - keyboard rates + return-in-motion
+//! - FFB `-0.025*delta*v^2`, clamp `±15`
+//! - Ackermann `r_in = L/tan(inner)`
 //!
 //! Everything here is pure and desktop-only in use (called from `omsi-app`,
 //! never from `omsi-sim`/`omsi-render`), so mobile/touch paths are untouched.
 
-/// F1 camera switch glide, seconds (`BeginDriverEaseTo`, was 0.45s).
+/// F1 camera switch glide, seconds (was 0.45s).
 pub const VSE_CAM_EASE_SECS: f32 = 0.54;
 /// F1 look sensitivity, deg/px (`0.35 * 0.70`).
 pub const VSE_LOOK_SENS: f32 = 0.35 * 0.70;
@@ -73,14 +71,14 @@ pub const VSE_MAX_WHEEL_DEG_DEFAULT: f32 = 50.0;
 /// Directional (rear-steer) ratio, fade 25→40 km/h.
 pub const VSE_DIRECTIONAL_RATIO: f32 = -0.3;
 
-/// Ease-out cubic `s = 1-(1-t)^3` (`AdvanceDriverEase`).
+/// Ease-out cubic `s = 1-(1-t)^3`.
 pub fn vse_ease_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     let u = 1.0 - t;
     1.0 - u * u * u
 }
 
-/// Wrap camera index (`WrapCameraIndex`).
+/// Wrap camera index.
 pub fn vse_wrap_index(current: usize, count: usize, dir: i32) -> usize {
     if count == 0 {
         return 0;
@@ -94,13 +92,13 @@ pub fn vse_shortest_yaw(from_deg: f32, to_deg: f32) -> f32 {
     (to_deg - from_deg + 180.0).rem_euclid(360.0) - 180.0
 }
 
-/// Interior display FOV (`InteriorDisplayFov`).
+/// Interior display FOV.
 pub fn vse_interior_fov(base_deg: f32, zoom: f32) -> f32 {
     let z = zoom.clamp(0.0, 1.0);
     (base_deg / (1.0 + VSE_FOV_ZOOM_K * z)).max(VSE_FOV_MIN)
 }
 
-/// Interior orbit (`OnInteriorOrbit`): F1 only, ignored while transitioning.
+/// Interior orbit: F1 only, ignored while transitioning.
 pub fn vse_interior_orbit(yaw: f32, pitch: f32, dx: f32, dy: f32, zoom: f32) -> (f32, f32) {
     let stab = 1.0 - 0.25 * zoom.clamp(0.0, 1.0);
     let y = (yaw + dx * VSE_LOOK_SENS * stab).clamp(-VSE_LOOK_YAW_CLAMP, VSE_LOOK_YAW_CLAMP);
@@ -108,30 +106,30 @@ pub fn vse_interior_orbit(yaw: f32, pitch: f32, dx: f32, dy: f32, zoom: f32) -> 
     (y, p)
 }
 
-/// Interior zoom drag (`OnInteriorZoomDrag`): drag down (`dy>0`) zooms in.
+/// Interior zoom drag: drag down (`dy>0`) zooms in.
 pub fn vse_interior_zoom(zoom: f32, dy: f32) -> f32 {
     (zoom + dy * VSE_ZOOM_INTENT / VSE_ZOOM_PX).clamp(0.0, 1.0)
 }
 
-/// F3 initial distance (`Start`: `wb*1.5+4`, `wb>1?wb:6.08`).
+/// F3 initial distance (`wb*1.5+4`, `wb>1?wb:6.08`).
 pub fn vse_chase_dist0(wheelbase_m: f32) -> f32 {
     let wb = if wheelbase_m > 1.0 { wheelbase_m } else { 6.08 };
     wb * 1.5 + 4.0
 }
 
-/// F3 orbit (`OnChaseOrbit`): `yaw -= dx*0.35`, `pitch += dy*0.35`.
+/// F3 orbit: `yaw -= dx*0.35`, `pitch += dy*0.35`.
 pub fn vse_chase_orbit(yaw: f32, pitch: f32, dx: f32, dy: f32) -> (f32, f32) {
     let y = yaw - dx * VSE_CHASE_SENS;
     let p = (pitch + dy * VSE_CHASE_SENS).clamp(VSE_CHASE_PITCH_MIN, VSE_CHASE_PITCH_MAX);
     (y, p)
 }
 
-/// F3 zoom (`OnZoom`): `dist -= delta*1.5`, clamp `4..40`.
+/// F3 zoom: `dist -= delta*1.5`, clamp `4..40`.
 pub fn vse_chase_zoom(dist: f32, delta: f32) -> f32 {
     (dist - delta * VSE_CHASE_ZOOM_K).clamp(VSE_CHASE_DIST_MIN, VSE_CHASE_DIST_MAX)
 }
 
-/// F3 chase offset in vehicle-yaw frame (`UpdateCameraPose ExteriorChase`).
+/// F3 chase offset in vehicle-yaw frame.
 pub fn vse_chase_offset(dist: f32, yaw_deg: f32, pitch_deg: f32) -> [f32; 3] {
     let (cy, cp) = (yaw_deg.to_radians(), pitch_deg.to_radians());
     [
@@ -141,7 +139,7 @@ pub fn vse_chase_offset(dist: f32, yaw_deg: f32, pitch_deg: f32) -> [f32; 3] {
     ]
 }
 
-/// Low-pass `pivotZ` (`tau 0.30`): `filt += (1-exp(-dt/tau)) * (z - filt)`.
+/// Low-pass pivot height (`tau 0.30`): `filt += (1-exp(-dt/tau)) * (z - filt)`.
 pub fn vse_chase_z_filter(current: Option<f32>, z: f32, dt: f32) -> f32 {
     match current {
         None => z,
@@ -153,12 +151,12 @@ pub fn vse_chase_z_filter(current: Option<f32>, z: f32, dt: f32) -> f32 {
     }
 }
 
-/// F4 target smoothing (`EditorCameraController::Update`).
+/// F4 target smoothing.
 pub fn vse_f4_blend(dt: f32) -> f32 {
     1.0 - (-VSE_F4_SMOOTH_K * dt.max(0.0)).exp()
 }
 
-/// VSE mouse steering target (`CockpitDrag::MouseSteerTarget`):
+/// Mouse steering target:
 /// edge `0.75*|nx|`, corner ramps `lin(0.20,1,|nx|)*lin(0.10,1,|ny|)`.
 pub fn vse_mouse_target(nx: f32, ny: f32) -> f32 {
     let ax = nx.abs().clamp(0.0, 1.0);
@@ -174,7 +172,7 @@ pub fn vse_mouse_target(nx: f32, ny: f32) -> f32 {
     }
 }
 
-/// VSE mouse pedals (`MouseDriveIntent`): throttle deadzone `0.10`/full top,
+/// Mouse pedals: throttle deadzone `0.10`/full top,
 /// brake deadzone `0.10`/full at 70% down.
 pub fn vse_mouse_pedals(ny: f32) -> (f32, f32) {
     let ay = ny.clamp(-1.0, 1.0);
@@ -192,21 +190,21 @@ pub fn vse_mouse_pedals(ny: f32) -> (f32, f32) {
     (thr, brk)
 }
 
-/// Mouse slew without teleport (`kLagTau 0.12`, `kSlewRate 2.5`, `dt` seconds).
+/// Mouse slew without teleport (`tau 0.12 s`, `slew 2.5/s`, `dt` seconds).
 pub fn vse_mouse_slew(sm: f32, target: f32, dt: f32) -> f32 {
     let lagged = sm + (target - sm) * (dt / VSE_MOUSE_TAU).min(1.0);
     let max_step = VSE_MOUSE_SLEW * dt;
     (sm + (lagged - sm).clamp(-max_step, max_step)).clamp(-1.0, 1.0)
 }
 
-/// Neutral-until-moved gate (reference `mouse_anchor`): while the cursor
+/// Neutral-until-moved gate: while the cursor
 /// still sits where driving was switched on, target and pedals stay neutral —
 /// no first-frame jump from wherever the cursor happened to be.
 pub fn vse_anchor_neutral(anchor: Option<(f32, f32)>, cursor: (f32, f32)) -> bool {
     anchor.is_some_and(|a| a == cursor)
 }
 
-/// Corner-boost ratchet (VSE `SimulationPreviewHost.cpp:2006-2027`, exact):
+/// Corner-boost ratchet:
 /// only the excess over `0.75*|nx|` latches; the hold clears at centre, on
 /// side change or when `|nx|<0.5` — but the TARGET is always recomputed as
 /// `sign*(lateral + |hold|)`, so it passes through intact even where no hold
@@ -231,9 +229,9 @@ pub fn vse_boost_hold(hold: f32, nx: f32, target: f32) -> (f32, f32) {
     } else {
         0
     };
-    // (the reference's inner `if (sgnHold==0||sgn!=sgnHold) hold=0` inside the
+    // (the inner `if (sgnHold==0||sgn!=sgnHold) hold=0` inside the
     // boost branch is dead: side-change with a live hold is cleared above, a
-    // zero hold is already zero — so it is not ported.)
+    // zero hold is already zero.)
     let mut h = hold;
     if sgn == 0 || ax < 0.5 || (sgn_hold != 0 && sgn != sgn_hold) {
         h = 0.0;
@@ -266,7 +264,7 @@ fn smoothstep01(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Keyboard steer/unsteer rates per second (`SimulationPreviewHost.cpp:1886-1965`).
+/// Keyboard steer/unsteer rates per second.
 pub fn vse_keyboard_rates(v_kmh: f32, input_mag: f32, sens: f32) -> (f32, f32, f32) {
     let sens = sens.clamp(0.20, 2.00);
     let base = VSE_STEER_BASE * sens;
@@ -307,7 +305,7 @@ pub fn vse_hermite_pitch(mag: f32) -> f32 {
     }
 }
 
-/// Return-to-centre step for `dt` seconds (`SimulationPreviewHost.cpp:2049-2115`).
+/// Return-to-centre step for `dt` seconds.
 /// Returns the new input. Zero rate while standing (`v_kmh == 0`).
 pub fn vse_return_step(input: f32, v_kmh: f32, half_deg: f32, pitch_mult: f32, dt: f32) -> f32 {
     if input.abs() <= 0.0001 || dt <= 0.0 {
@@ -344,12 +342,12 @@ pub fn vse_return_step(input: f32, v_kmh: f32, half_deg: f32, pitch_mult: f32, d
     }
 }
 
-/// Self-aligning torque, N·m (`ControlSystems.cpp:90-99`, single source of truth).
+/// Self-aligning torque, N·m (single source of truth).
 pub fn vse_ffb_nm(steer_rad: f32, v_mps: f32) -> f32 {
     (-VSE_FFB_K * steer_rad * v_mps * v_mps).clamp(-VSE_FFB_MAX, VSE_FFB_MAX)
 }
 
-/// Ackermann inner/outer magnitudes (`ChassisMotion.cpp:909-921`).
+/// Ackermann inner/outer magnitudes.
 /// `r_in = L0/tan(inner)`, `r_out = r_in + track`, `outer = atan(L0/r_out)`.
 pub fn vse_ackermann(delta_cmd: f32, max_steer_rad: f32, l0_m: f32, track_m: f32) -> (f32, f32) {
     let max = max_steer_rad.max(0.1);
@@ -365,7 +363,7 @@ pub fn vse_ackermann(delta_cmd: f32, max_steer_rad: f32, l0_m: f32, track_m: f32
     (inner, (l0 / r_out).atan())
 }
 
-/// Bicycle effective radius `R = L/(tan(delta)*f)` (`PlanarKinematics`).
+/// Bicycle effective radius `R = L/(tan(delta)*f)`.
 pub fn vse_bicycle_radius(l_m: f32, delta_rad: f32, f_curva: f32) -> f32 {
     let t = delta_rad.tan() * f_curva;
     if t.abs() < 1e-6 {
@@ -375,7 +373,7 @@ pub fn vse_bicycle_radius(l_m: f32, delta_rad: f32, f_curva: f32) -> f32 {
     }
 }
 
-/// Curve authority table (`CurveAuthority.hpp:39-56`).
+/// Curve authority table.
 pub fn vse_curve_authority(layout: &str) -> f32 {
     match layout {
         "Rigid4x2" => 1.0,
@@ -402,9 +400,9 @@ pub fn vse_yaw_target(v_mps: f32, l1_m: f32, delta_rad: f32, f_curva: f32) -> f3
 }
 
 // ---------------------------------------------------------------------------
-// Runtime routing tables (behavioral parity probes).
+// Runtime routing tables.
 //
-// These are 1:1 extractions of the dispatch decisions in `app_events.rs`
+// These capture the dispatch decisions in `app_events.rs`
 // (`DeviceEvent::MouseMotion`, `App::wheel`) so the "which system consumes this
 // input in this context" question is answered by tests, not by code reading.
 // Changing behavior means changing these tables AND their call sites together.
@@ -420,13 +418,13 @@ pub enum VseDragButton {
 /// What a mouse-motion burst does in a view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VseDragAction {
-    /// Precision zoom (`OnInteriorZoomDrag` math): vertical drag, down = in.
+    /// Precision zoom: vertical drag, down = in.
     /// F1/F3/F4. Never teleports; `Space` eases it back (see `vse_reset_blend`).
     ZoomPrecision,
-    /// Precision zoom, legacy multiplier path — F2 only, byte-identical to
-    /// the validated behavior (F2 is frozen, see the input parity audit).
+    /// Precision zoom, legacy multiplier path — F2 only, byte-identical;
+    /// frozen F2 behavior.
     ZoomLegacy,
-    /// Orbit/look (`OnInteriorOrbit` / `OnChaseOrbit` / free turn).
+    /// Orbit/look.
     Look,
     /// Past-the-edge nudge while mouse-driving.
     MouseEdge,
@@ -434,10 +432,9 @@ pub enum VseDragAction {
     Nothing,
 }
 
-/// VSE parity routing (`OnMouseMove` dispatch): MMB+drag orbits every mode;
-/// RMB+drag vertical is precision zoom in `driver`/`outside`/`free` (VSE F1
-/// math everywhere the VSE has it, extension where it has none — never in
-/// `pax`, never global).
+/// Drag routing: MMB+drag orbits every mode;
+/// RMB+drag vertical is precision zoom in `driver`/`outside`/`free`;
+/// never in `pax`, never global.
 pub fn vse_drag_action(
     btn: Option<VseDragButton>,
     view: &str,
@@ -470,7 +467,7 @@ pub enum VseWheelAction {
 
 /// Routing for the views the chase machine does not own (driver/pax/free-fly
 /// and the player-less camera). `outside` is owned by `VseChase::on_zoom`,
-/// VSE-orbit `free` by `VseFreeOrbit::on_zoom`.
+/// orbit `free` by `VseFreeOrbit::on_zoom`.
 pub fn vse_wheel_action(view: &str, _ctrl: bool, has_player: bool) -> VseWheelAction {
     if view == "pax" && has_player {
         VseWheelAction::ZoomLegacy
@@ -481,13 +478,13 @@ pub fn vse_wheel_action(view: &str, _ctrl: bool, has_player: bool) -> VseWheelAc
     }
 }
 
-/// F1 zoom intent: VSE `0.70` minus the user-tested 20% (`0.56`).
-/// F3/F4 keep the audited VSE `0.70`. Explicit per-mode value, not a guess.
+/// F1 zoom intent: `0.70` minus the user-tested 20% (`0.56`).
+/// F3/F4 keep `0.70`. Explicit per-mode value, not a guess.
 pub const VSE_F1_ZOOM_INTENT: f32 = 0.56;
 
-/// Precision-zoom step (`OnInteriorZoomDrag` + `InteriorDisplayFov`): the
-/// multiplier `m` is the VSE zoom state `z` seen through `m = 1/(1+5.5z)`,
-/// so the same drag deltas take the same FOV path as the VSE for the same
+/// Precision-zoom step: the
+/// multiplier `m` is the zoom state `z` seen through `m = 1/(1+5.5z)`,
+/// so the same drag deltas take the same FOV path for the same
 /// base FOV. `dy > 0` (drag down) zooms in. Result stays `<= 1.0`
 /// (never into negative zoom); callers clamp the floor.
 pub fn vse_precision_zoom_step(mult: f32, dy: f32, intent: f32) -> f32 {
@@ -496,19 +493,19 @@ pub fn vse_precision_zoom_step(mult: f32, dy: f32, intent: f32) -> f32 {
     1.0 / (1.0 + VSE_FOV_ZOOM_K * z2)
 }
 
-/// Zoom-dependent downward pitch margin (user-tested extension, geometrically
-/// derived — NOT claimed as VSE behavior; the VSE fixes `-35°`): at zoom the
+/// Zoom-dependent downward pitch margin (user-tested, geometrically
+/// derived): at zoom the
 /// visible window shrinks, so it may travel inside the normal frame's envelope
 /// before hitting the physical stop. `margin = half(base) − half(base·m)` in
 /// degrees, `>= 0` (zoom-out never grants extra). At `m = 1` this is `0` and
-/// the VSE `-35°` stands exactly.
+/// `-35°` stands exactly.
 pub fn vse_zoom_pitch_margin(base_fov_deg: f32, mult: f32) -> f32 {
     let half0 = (base_fov_deg.to_radians() * 0.5).tan();
     let margin = half0.atan().to_degrees() - (half0 * mult).atan().to_degrees();
     margin.max(0.0)
 }
 
-/// Effective downward pitch limit for the F1 head: VSE `-35°` minus the
+/// Effective downward pitch limit for the F1 head: `-35°` minus the
 /// zoom margin above.
 pub fn vse_pitch_min_for_zoom(base_fov_deg: f32, mult: f32) -> f32 {
     VSE_LOOK_PITCH_MIN - vse_zoom_pitch_margin(base_fov_deg, mult)
@@ -542,12 +539,12 @@ pub fn vse_orbit_pivot(
 }
 
 /// Drive-head glide switch (menu "Drive Head Smooth Movement", default ON):
-/// `true` = VSE `0.54s` ease, `false` = instant cut, no interpolation.
+/// `true` = `0.54s` ease, `false` = instant cut, no interpolation.
 pub fn vse_glide_active(smooth_setting: bool) -> bool {
     smooth_setting && VSE_CAM_EASE_SECS > 0.0
 }
 
-/// F4 press state machine: first press from another view snapshots the VSE
+/// F4 press state machine: first press from another view snapshots the
 /// chase pose (`snap = true`, orbit mode); further presses toggle fly mode.
 /// Returns `(snapshot_now, fly_afterwards)`.
 pub fn vse_free_press(in_free: bool, fly: bool) -> (bool, bool) {
@@ -558,10 +555,10 @@ pub fn vse_free_press(in_free: bool, fly: bool) -> (bool, bool) {
     }
 }
 
-/// F3 chase pose in the VSE yaw frame (`UpdateCameraPose ExteriorChase`,
+/// F3 chase pose in the yaw frame (
 /// x = right, y = forward, z = up): `off = [D·sinCY·cosCP, -D·cosCY·cosCP,
 /// 1.6 + D·sinCP]`, camera = vehicle + yaw-basis·off at the pivot height,
-/// target = vehicle + 1.4. Pure VSE relation, axis-preserving.
+/// target = vehicle + 1.4. Axis-preserving.
 pub fn vse_chase_pose(
     veh: [f64; 3],
     pivot_z: f64,
@@ -589,8 +586,8 @@ pub fn vse_chase_pose(
     (cam, tgt)
 }
 
-/// Eased Space return (`ResetCameraCenter` → `Begin/AdvanceDriverEaseTo`,
-/// same `0.54s` ease-out as the head glide): look and zoom multiplier ease
+/// Eased Space return (same `0.54s` ease-out as the head glide): look and zoom
+/// multiplier ease
 /// from their current values to `(0,0)`/`1.0` — never a teleport.
 /// Returns `(look, zoom_or_remove, done)`.
 pub fn vse_reset_blend(
@@ -676,8 +673,8 @@ mod tests {
         assert!((s - 0.025).abs() < 1e-4);
     }
 
-    /// No steering deadzone in mouse drive (VSE: deadzone is pedals-only
-    /// `0.10`; `MouseSteerTarget` is proportional from zero). The target is
+    /// No steering deadzone in mouse drive (deadzone is pedals-only
+    /// `0.10`; the steer map is proportional from zero). The target is
     /// strictly increasing in |nx| and zero only at the centre.
     #[test]
     fn mouse_target_has_no_center_deadzone() {
@@ -696,7 +693,7 @@ mod tests {
     }
 
     /// State separation: a stale past-edge accumulation never survives the
-    /// VSE ratchet — near the centre the HOLD always clears, while the small
+    /// ratchet — near the centre the HOLD always clears, while the small
     /// target itself passes through intact (no steering deadzone: the old
     /// `(0,0)` return here was the O centre-deadzone bug).
     #[test]
@@ -707,13 +704,13 @@ mod tests {
         approx(vse_boost_hold(1.5, 0.1, 0.075), (0.0, 0.075));
         approx(vse_boost_hold(-1.5, -0.1, -0.075), (0.0, -0.075));
         assert_eq!(vse_boost_hold(1.5, 0.0, 0.0), (0.0, 0.0));
-        // small lateral target passes through: VSE `lateral + 0`.
+        // small lateral target passes through: `lateral + 0`.
         approx(vse_boost_hold(0.0, 0.3, vse_mouse_target(0.3, 0.0)), (0.0, 0.225));
         // side change: hold cleared, new-side target recomputed, no zero frame.
         approx(vse_boost_hold(0.25, -0.6, -0.45), (0.0, -0.45));
     }
 
-    /// Ratchet persistence (VSE: `target = lateral + |hold|` always): after a
+    /// Ratchet persistence (`target = lateral + |hold|` always): after a
     /// corner visit the latched boost holds the wheel even when the raw
     /// target falls back to the edge — it never unwinds on its own.
     #[test]
@@ -777,7 +774,7 @@ mod tests {
     }
 
     /// Behavioral routing matrix: MMB+drag orbits every mode; RMB+drag is
-    /// precision zoom in driver/outside/free (VSE F1 math), legacy zoom in pax
+    /// precision zoom in driver/outside/free, legacy zoom in pax
     /// (frozen F2); with no button only mouse-drive sees motion, never with
     /// the menu open.
     #[test]
@@ -818,7 +815,7 @@ mod tests {
 
     /// Behavioral routing matrix: the wheel serves F2's frozen path, is a
     /// no-op in F1 with a bus, and dollies free-fly/foot/player-less views.
-    /// `outside` and VSE-orbit `free` never reach the table (machines own
+    /// `outside` and orbit `free` never reach the table (machines own
     /// their distance).
     #[test]
     fn wheel_routing_only_f3_zooms() {
@@ -834,7 +831,7 @@ mod tests {
         assert_eq!(vse_wheel_action("foot", false, false), W::Dolly);
     }
 
-    /// Precision zoom follows the VSE state curve: a full 364 px drag takes
+    /// Precision zoom follows the state curve: a full 364 px drag takes
     /// `z` 0→0.70 (`m` 1.0→0.206), drag down zooms in, drag up undoes it, and
     /// the multiplier never exceeds 1.0 (never negative zoom). F1 runs the
     /// same curve 20% slower (`VSE_F1_ZOOM_INTENT`).
@@ -853,7 +850,7 @@ mod tests {
         assert!((VSE_F1_ZOOM_INTENT - VSE_ZOOM_INTENT * 0.80).abs() < 1e-6);
     }
 
-    /// Zoom-dependent pitch margin: zero at rest (VSE `-35°` stands), growing
+    /// Zoom-dependent pitch margin: zero at rest (`-35°` stands), growing
     /// with zoom — normal, intermediate, maximum.
     #[test]
     fn zoom_pitch_margin_grows_with_zoom() {
@@ -911,7 +908,7 @@ mod tests {
         assert_eq!(vse_pick_steering(Some(-0.5), 0.0), -0.5);
     }
 
-    /// §7 numeric proof (VSE `UpdateCameraPose ExteriorChase`, hand-derived):
+    /// §7 numeric proof (hand-derived):
     /// bus at (100, 200, 50), ride 0.3 → pivot 49.7, heading 0, chase yaw 0,
     /// pitch 12°, dist = 6.08·1.5+4 = 13.12.
     /// off = [0, -13.12·cos12°, 1.6+13.12·sin12°] = [0, -12.833, 4.328];
